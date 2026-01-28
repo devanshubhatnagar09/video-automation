@@ -35,6 +35,8 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [showLogs, setShowLogs] = useState(true)
   const logsEndRef = useRef<HTMLDivElement>(null)
+  const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const isPollingRef = useRef(false)
 
   // Auto-scroll logs
   useEffect(() => {
@@ -42,6 +44,17 @@ export default function Dashboard() {
       logsEndRef.current.scrollIntoView({ behavior: 'smooth' })
     }
   }, [logs])
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingTimeoutRef.current) {
+        clearTimeout(pollingTimeoutRef.current)
+        pollingTimeoutRef.current = null
+      }
+      isPollingRef.current = false
+    }
+  }, [])
 
   // Calculate real metrics from video history
   const stats = useMemo(() => {
@@ -90,6 +103,13 @@ export default function Dashboard() {
       return
     }
 
+    // Stop any existing polling
+    isPollingRef.current = false
+    if (pollingTimeoutRef.current) {
+      clearTimeout(pollingTimeoutRef.current)
+      pollingTimeoutRef.current = null
+    }
+
     setIsTriggering(true)
     setIsRunning(true)
     resetWorkflow()
@@ -101,7 +121,14 @@ export default function Dashboard() {
       toast.success('Workflow started!')
 
       // Poll for status and logs
+      isPollingRef.current = true
+      
       const pollStatus = async () => {
+        // Stop polling if flag is false
+        if (!isPollingRef.current) {
+          return
+        }
+
         try {
           const status = await getWorkflowStatus(jobId)
           
@@ -126,6 +153,13 @@ export default function Dashboard() {
           setLogs(logsResponse.logs)
 
           if (status.status === 'completed') {
+            // Stop polling
+            isPollingRef.current = false
+            if (pollingTimeoutRef.current) {
+              clearTimeout(pollingTimeoutRef.current)
+              pollingTimeoutRef.current = null
+            }
+            
             // Mark all steps as completed
             stepOrder.forEach(step => updateStep(step, { status: 'completed' }))
             
@@ -150,6 +184,13 @@ export default function Dashboard() {
             setIsRunning(false)
             setIsTriggering(false)
           } else if (status.status === 'error') {
+            // Stop polling
+            isPollingRef.current = false
+            if (pollingTimeoutRef.current) {
+              clearTimeout(pollingTimeoutRef.current)
+              pollingTimeoutRef.current = null
+            }
+            
             // Save failed record to history
             addVideoRecord({
               id: jobId,
@@ -166,11 +207,17 @@ export default function Dashboard() {
             setIsRunning(false)
             setIsTriggering(false)
           } else {
-            setTimeout(pollStatus, 1500)
+            // Continue polling only if flag is still true
+            if (isPollingRef.current) {
+              pollingTimeoutRef.current = setTimeout(pollStatus, 1500)
+            }
           }
         } catch (err) {
           console.error('Poll error:', err)
-          setTimeout(pollStatus, 2000)
+          // Continue polling only if flag is still true
+          if (isPollingRef.current) {
+            pollingTimeoutRef.current = setTimeout(pollStatus, 2000)
+          }
         }
       }
 

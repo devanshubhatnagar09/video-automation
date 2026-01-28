@@ -2,6 +2,7 @@
   "name": "video-automation",
   "version": "1.0.0",
   "description": "AI-powered video automation with Gemini and YouTube integration",
+  "type": "module",
   "engines": {
     "node": "20.x"
   },

@@ -22,7 +22,7 @@ export default function Layout() {
   const location = useLocation()
 
   return (
-    <div className="min-h-screen flex">
+    <div className="min-h-screen flex" style={{ background: 'transparent' }}>
       {/* Sidebar */}
       <motion.aside 
         initial={{ x: -100, opacity: 0 }}
