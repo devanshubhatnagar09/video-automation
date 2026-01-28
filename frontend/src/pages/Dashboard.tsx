@@ -34,7 +34,6 @@ export default function Dashboard() {
   const [isTriggering, setIsTriggering] = useState(false)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [showLogs, setShowLogs] = useState(true)
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll logs
@@ -346,7 +345,7 @@ export default function Dashboard() {
                                       View data
                                     </summary>
                                     <pre className="mt-2 p-2 bg-black/50 rounded text-xs text-gray-400 overflow-x-auto max-h-48 overflow-y-auto">
-                                      {JSON.stringify(log.data, null, 2)}
+                                      {JSON.stringify(log.data as Record<string, unknown>, null, 2)}
                                     </pre>
                                   </details>
                                 )}
@@ -456,7 +455,7 @@ export default function Dashboard() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="font-medium truncate">{video.title}</p>
-                    <p className="text-sm text-gray-400 truncate">{video.idea}</p>
+                    <p className="text-sm text-gray-400 truncate">{video.description || video.script}</p>
                   </div>
                   <div className={`px-3 py-1 rounded-full text-xs font-medium ${
                     video.status === 'completed' 

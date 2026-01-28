@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { 
   FileText, 
@@ -62,8 +62,10 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
 }`
     setLocalPrompts({
       contentPrompt: defaultPrompt,
-      defaultVoice: 'Samantha',
-      defaultStyle: 'cinematic'
+      contentPromptHindi: defaultPrompt,
+      defaultVoice: 'Jenny',
+      defaultStyle: 'cinematic',
+      language: 'english'
     })
     setHasChanges(true)
     toast.success('Reset to defaults')
