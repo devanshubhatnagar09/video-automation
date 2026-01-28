@@ -2,6 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { v4 as uuidv4 } from 'uuid'
 import { setJob, updateJob, getJob } from './jobs.js'
+import { Job } from '../models/Job.js'
+import connectDB from '../db/mongodb.js'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Set CORS headers
@@ -39,15 +41,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[Start] Created job ${jobId}`)
 
     // Run workflow in background (note: Vercel has 10s limit for hobby, 60s for pro)
+    // Don't await - let it run async so we can return immediately
     runWorkflow(jobId, geminiApiKey).catch(async (err) => {
-      console.error('Workflow error:', err)
+      console.error('[Start] Workflow error:', err)
       try {
         await updateJob(jobId, {
           status: 'error',
           error: err instanceof Error ? err.message : 'Unknown error'
         })
+        await addLog(jobId, { 
+          type: 'error', 
+          step: 'init', 
+          message: `Workflow failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 
+          timestamp: new Date().toISOString() 
+        })
       } catch (updateErr) {
-        console.error('Failed to update job on error:', updateErr)
+        console.error('[Start] Failed to update job on error:', updateErr)
       }
     })
 
@@ -63,11 +72,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
 async function addLog(jobId: string, log: { type: string; step: string; message: string; data?: unknown; timestamp: string }) {
   try {
-    const job = await getJob(jobId)
+    await connectDB()
+    const job = await Job.findOne({ jobId })
     if (job) {
-      await updateJob(jobId, {
-        logs: [...job.logs, log]
-      })
+      const updatedLogs = [...job.logs, log]
+      await Job.findOneAndUpdate(
+        { jobId },
+        { $set: { logs: updatedLogs } },
+        { new: true }
+      )
+      console.log(`[addLog] Added log to job ${jobId}: ${log.type} - ${log.message}`)
+    } else {
+      console.warn(`[addLog] Job ${jobId} not found`)
     }
   } catch (error) {
     console.error('[addLog] Error:', error)
@@ -75,11 +91,21 @@ async function addLog(jobId: string, log: { type: string; step: string; message:
 }
 
 async function runWorkflow(jobId: string, apiKey: string) {
+  console.log(`[runWorkflow] Starting workflow for job ${jobId}`)
+  
   try {
+    // Verify job exists
+    const initialJob = await getJob(jobId)
+    if (!initialJob) {
+      throw new Error(`Job ${jobId} not found in database`)
+    }
+    
+    console.log(`[runWorkflow] Job found, initializing Gemini AI`)
     const genAI = new GoogleGenerativeAI(apiKey)
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
     // Step 1: Generate Idea
+    console.log(`[runWorkflow] Step 1: Generating idea`)
     await updateJob(jobId, {
       step: 'idea',
       message: 'Generating video idea...'
@@ -91,8 +117,10 @@ Return JSON only: {"title": "...", "hook": "...", "concept": "...", "storyArc": 
 
     await addLog(jobId, { type: 'input', step: 'idea', message: 'Prompt sent to Gemini', data: { prompt: ideaPrompt }, timestamp: new Date().toISOString() })
 
+    console.log(`[runWorkflow] Calling Gemini API for idea generation`)
     const ideaResult = await model.generateContent(ideaPrompt)
     const ideaText = ideaResult.response.text()
+    console.log(`[runWorkflow] Gemini response received, length: ${ideaText.length}`)
     
     await addLog(jobId, { type: 'output', step: 'idea', message: 'Response received', data: { response: ideaText }, timestamp: new Date().toISOString() })
 
@@ -189,13 +217,28 @@ Return JSON only: {"prompt": "detailed 150-300 word prompt", "duration": "30", "
 
   } catch (error: unknown) {
     const err = error as { message?: string }
-    const currentJob = await getJob(jobId)
-    if (currentJob) {
-      await addLog(jobId, { type: 'error', step: currentJob.step, message: err.message || 'Unknown error', timestamp: new Date().toISOString() })
+    console.error(`[runWorkflow] Error in workflow ${jobId}:`, err)
+    
+    try {
+      const currentJob = await getJob(jobId)
+      const errorStep = currentJob?.step || 'unknown'
+      const errorMessage = err.message || 'Unknown error'
+      
+      await addLog(jobId, { 
+        type: 'error', 
+        step: errorStep, 
+        message: `Workflow failed: ${errorMessage}`, 
+        timestamp: new Date().toISOString() 
+      })
+      
       await updateJob(jobId, {
         status: 'error',
-        error: err.message || 'Unknown error'
+        error: errorMessage
       })
+      
+      console.log(`[runWorkflow] Error logged for job ${jobId}`)
+    } catch (logError) {
+      console.error(`[runWorkflow] Failed to log error for job ${jobId}:`, logError)
     }
   }
 }

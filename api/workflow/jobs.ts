@@ -81,14 +81,28 @@ export async function updateJob(jobId: string, updates: Partial<JobStatus>): Pro
     if (updates.step !== undefined) updateData.step = updates.step
     if (updates.message !== undefined) updateData.message = updates.message
     if (updates.error !== undefined) updateData.error = updates.error
-    if (updates.data !== undefined) updateData.data = updates.data
-    if (updates.logs !== undefined) updateData.logs = updates.logs
+    
+    // Handle data merge - if updates.data exists, merge with existing data
+    if (updates.data !== undefined) {
+      const currentJob = await Job.findOne({ jobId })
+      if (currentJob && currentJob.data) {
+        updateData.data = { ...currentJob.data, ...updates.data }
+      } else {
+        updateData.data = updates.data
+      }
+    }
+    
+    // Handle logs - if updates.logs exists, replace entire logs array
+    if (updates.logs !== undefined) {
+      updateData.logs = updates.logs
+    }
     
     await Job.findOneAndUpdate(
       { jobId },
       { $set: updateData },
       { new: true }
     )
+    console.log(`[updateJob] Updated job ${jobId}:`, Object.keys(updateData))
   } catch (error) {
     console.error('[updateJob] Error:', error)
     throw error
