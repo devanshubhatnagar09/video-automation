@@ -98,7 +98,6 @@ export default function Dashboard() {
 
     try {
       const { jobId } = await startWorkflow(geminiApiKey)
-      setCurrentJobId(jobId)
       toast.success('Workflow started!')
 
       // Poll for status and logs
@@ -339,16 +338,19 @@ export default function Dashboard() {
                                   </span>
                                 </div>
                                 <p className="text-gray-300 mt-1">{log.message}</p>
-                                {log.data && (
-                                  <details className="mt-2">
-                                    <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300">
-                                      View data
-                                    </summary>
-                                    <pre className="mt-2 p-2 bg-black/50 rounded text-xs text-gray-400 overflow-x-auto max-h-48 overflow-y-auto">
-                                      {JSON.stringify(log.data as Record<string, unknown>, null, 2)}
-                                    </pre>
-                                  </details>
-                                )}
+                                {(() => {
+                                  const hasData = log.data !== undefined && log.data !== null;
+                                  return hasData ? (
+                                    <details className="mt-2">
+                                      <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300">
+                                        View data
+                                      </summary>
+                                      <pre className="mt-2 p-2 bg-black/50 rounded text-xs text-gray-400 overflow-x-auto max-h-48 overflow-y-auto">
+                                        {JSON.stringify(log.data as Record<string, unknown>, null, 2)}
+                                      </pre>
+                                    </details>
+                                  ) : null;
+                                })()}
                               </div>
                             </div>
                           </motion.div>
