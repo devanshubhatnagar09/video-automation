@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { getJob } from '../jobs.js'
+import { getAllJobs } from '../jobs.js'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Set CORS headers
@@ -16,24 +16,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const { jobId } = req.query
-
-  if (!jobId || typeof jobId !== 'string') {
-    return res.status(400).json({ error: 'Job ID is required' })
-  }
-
-  const job = getJob(jobId)
-
-  if (!job) {
-    return res.status(404).json({ 
-      success: false,
-      error: 'Job not found',
-      note: 'Job may have expired or serverless function was restarted. In-memory storage resets on cold starts.'
+  const jobs = getAllJobs()
+  const allLogs: Array<{ jobId: string; type: string; step: string; message: string; data?: unknown; timestamp: string }> = []
+  
+  jobs.forEach((job, jobId) => {
+    job.logs.forEach(log => {
+      allLogs.push({ ...log, jobId })
     })
-  }
-
-  res.json({ 
-    success: true,
-    ...job
   })
+
+  // Sort by timestamp, most recent first
+  allLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+  res.json({ logs: allLogs.slice(0, 100) }) // Last 100 logs
 }

@@ -26,14 +26,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!job) {
     return res.status(404).json({ 
-      success: false,
-      error: 'Job not found',
-      note: 'Job may have expired or serverless function was restarted. In-memory storage resets on cold starts.'
+      logs: [],
+      error: 'Job not found'
     })
   }
 
-  res.json({ 
-    success: true,
-    ...job
-  })
+  res.json({ logs: job.logs || [] })
 }
