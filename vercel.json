@@ -1,12 +1,11 @@
 {
   "version": 2,
-  "nodejs": "18.x",
   "buildCommand": "cd frontend && npm install && npm run build",
   "outputDirectory": "frontend/dist",
   "installCommand": "cd backend && npm install && cd ../frontend && npm install",
   "functions": {
     "api/**/*.ts": {
-      "runtime": "@vercel/node@3.0.0",
+      "runtime": "nodejs18.x",
       "maxDuration": 300
     }
   },
