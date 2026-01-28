@@ -41,10 +41,12 @@ Go to Vercel Dashboard → Project → Settings → Environment Variables
 
 **Add/Update these:**
 ```
-YOUTUBE_CLIENT_ID=490529778863-m8n08ln2b1da5636am6ffnqljctd5ru5.apps.googleusercontent.com
-YOUTUBE_CLIENT_SECRET=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
+YOUTUBE_CLIENT_ID=your-client-id-here.apps.googleusercontent.com
+YOUTUBE_CLIENT_SECRET=your-client-secret-here
 YOUTUBE_REDIRECT_URI=https://video-automation-ten.vercel.app/api/youtube/callback
 ```
+
+**Note**: Replace `your-client-id-here` and `your-client-secret-here` with your actual values from Google Cloud Console.
 
 **Important**: 
 - `YOUTUBE_REDIRECT_URI` must match EXACTLY what's in Google Cloud Console
