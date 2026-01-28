@@ -5,7 +5,7 @@
   "installCommand": "cd backend && npm install && cd ../frontend && npm install",
   "functions": {
     "api/**/*.ts": {
-      "runtime": "nodejs18.x",
+      "runtime": "@vercel/node@3.x",
       "maxDuration": 300
     }
   },
