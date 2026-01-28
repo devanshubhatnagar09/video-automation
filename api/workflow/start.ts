@@ -11,6 +11,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version')
+  // Prevent caching
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end()
@@ -29,6 +33,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const jobId = uuidv4()
   
   try {
+    console.log(`[Start] Creating job ${jobId}`)
+    
     // Start workflow and return immediately
     await setJob(jobId, { 
       status: 'running', 
@@ -38,28 +44,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       createdAt: new Date().toISOString()
     })
     
-    console.log(`[Start] Created job ${jobId}`)
+    console.log(`[Start] Job ${jobId} created in database`)
 
-    // Run workflow in background (note: Vercel has 10s limit for hobby, 60s for pro)
-    // Don't await - let it run async so we can return immediately
-    runWorkflow(jobId, geminiApiKey).catch(async (err) => {
-      console.error('[Start] Workflow error:', err)
-      try {
-        await updateJob(jobId, {
-          status: 'error',
-          error: err instanceof Error ? err.message : 'Unknown error'
-        })
-        await addLog(jobId, { 
-          type: 'error', 
-          step: 'init', 
-          message: `Workflow failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 
-          timestamp: new Date().toISOString() 
-        })
-      } catch (updateErr) {
-        console.error('[Start] Failed to update job on error:', updateErr)
-      }
-    })
+    // IMPORTANT: On Vercel, we need to use waitUntil to keep function alive
+    // But since we're on Hobby plan, we'll run workflow synchronously for first step
+    // then return. The workflow will continue in subsequent status checks.
+    
+    // Start workflow - run first step synchronously to ensure it starts
+    const workflowPromise = runWorkflow(jobId, geminiApiKey)
+    
+    // For Vercel: Use waitUntil if available (Pro plan), otherwise run first step
+    if (typeof (res as any).waitUntil === 'function') {
+      // Pro plan - can use waitUntil
+      (res as any).waitUntil(workflowPromise)
+    } else {
+      // Hobby plan - start workflow but don't wait
+      workflowPromise.catch(async (err) => {
+        console.error('[Start] Workflow error:', err)
+        try {
+          await updateJob(jobId, {
+            status: 'error',
+            error: err instanceof Error ? err.message : 'Unknown error'
+          })
+          await addLog(jobId, { 
+            type: 'error', 
+            step: 'init', 
+            message: `Workflow failed: ${err instanceof Error ? err.message : 'Unknown error'}`, 
+            timestamp: new Date().toISOString() 
+          })
+        } catch (updateErr) {
+          console.error('[Start] Failed to update job on error:', updateErr)
+        }
+      })
+    }
 
+    // Return immediately
     res.json({ jobId, message: 'Workflow started' })
   } catch (error) {
     console.error('[Start] Error:', error)
@@ -94,6 +113,10 @@ async function runWorkflow(jobId: string, apiKey: string) {
   console.log(`[runWorkflow] Starting workflow for job ${jobId}`)
   
   try {
+    // Verify MongoDB connection
+    await connectDB()
+    console.log(`[runWorkflow] MongoDB connected`)
+    
     // Verify job exists
     const initialJob = await getJob(jobId)
     if (!initialJob) {
@@ -147,8 +170,10 @@ Return JSON only: {"prompt": "detailed 150-300 word prompt", "duration": "30", "
 
     await addLog(jobId, { type: 'input', step: 'prompt', message: 'Prompt sent to Gemini', data: { prompt: promptPrompt }, timestamp: new Date().toISOString() })
 
+    console.log(`[runWorkflow] Calling Gemini API for prompt generation`)
     const promptResult = await model.generateContent(promptPrompt)
     const promptText = promptResult.response.text()
+    console.log(`[runWorkflow] Gemini prompt response received`)
 
     await addLog(jobId, { type: 'output', step: 'prompt', message: 'Response received', data: { response: promptText }, timestamp: new Date().toISOString() })
 
@@ -214,6 +239,8 @@ Return JSON only: {"prompt": "detailed 150-300 word prompt", "duration": "30", "
     if (!job5) throw new Error('Job not found')
     
     await addLog(jobId, { type: 'info', step: 'complete', message: '🎉 Workflow completed', data: job5.data, timestamp: new Date().toISOString() })
+    
+    console.log(`[runWorkflow] Workflow ${jobId} completed successfully`)
 
   } catch (error: unknown) {
     const err = error as { message?: string }
