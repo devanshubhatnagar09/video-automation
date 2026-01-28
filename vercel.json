@@ -5,7 +5,7 @@
   "installCommand": "cd backend && npm install && cd ../frontend && npm install",
   "build": {
     "env": {
-      "NODE_VERSION": "18"
+      "NODE_VERSION": "24"
     }
   },
   "functions": {
