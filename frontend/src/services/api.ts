@@ -98,7 +98,7 @@ export const startWorkflow = async (geminiApiKey: string): Promise<{ jobId: stri
 }
 
 export const getWorkflowStatus = async (jobId: string): Promise<WorkflowStatusResponse> => {
-  const response = await api.get(`/workflow/status/${jobId}`)
+  const response = await api.get(`/workflow/status?jobId=${jobId}`)
   return response.data
 }
 
@@ -130,7 +130,7 @@ export interface LogEntry {
 }
 
 export const getJobLogs = async (jobId: string): Promise<{ logs: LogEntry[] }> => {
-  const response = await api.get(`/workflow/logs/${jobId}`)
+  const response = await api.get(`/workflow/logs?jobId=${jobId}`)
   return response.data
 }
 

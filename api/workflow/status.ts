@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { getJob } from '../jobs.js'
+import { getJob, getAllJobs } from './jobs.js'
 
+// Status endpoint - handles /status/[jobId] via query parameter
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Credentials', 'true')
@@ -26,17 +27,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const job = await getJob(jobId)
 
     if (!job) {
+      const allJobs = await getAllJobs()
+      console.log(`[Status] Job ${jobId} not found. Available jobs:`, Array.from(allJobs.keys()))
       return res.status(404).json({ 
-        logs: [],
-        error: 'Job not found'
+        success: false,
+        error: 'Job not found',
+        note: 'Job may have expired or was not found in database.',
+        jobId: jobId
       })
     }
+    
+    console.log(`[Status] Job ${jobId} found:`, { status: job.status, step: job.step })
 
-    res.json({ logs: job.logs || [] })
+    res.json({ 
+      success: true,
+      ...job
+    })
   } catch (error) {
-    console.error('[Logs] Error:', error)
+    console.error('[Status] Error:', error)
     res.status(500).json({
-      logs: [],
+      success: false,
       error: 'Database error',
       message: error instanceof Error ? error.message : 'Unknown error'
     })

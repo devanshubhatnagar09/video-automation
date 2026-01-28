@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { getAllJobs } from '../jobs.js'
+import { getJob, getAllJobs } from './jobs.js'
 
+// Consolidated logs endpoint - handles both /logs and /logs/[jobId]
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Credentials', 'true')
@@ -16,6 +17,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
+  const { jobId } = req.query
+
+  // If jobId provided, return logs for that job
+  if (jobId && typeof jobId === 'string') {
+    try {
+      const job = await getJob(jobId)
+
+      if (!job) {
+        return res.status(404).json({ 
+          logs: [],
+          error: 'Job not found'
+        })
+      }
+
+      return res.json({ logs: job.logs || [] })
+    } catch (error) {
+      console.error('[Logs] Error:', error)
+      return res.status(500).json({
+        logs: [],
+        error: 'Database error',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      })
+    }
+  }
+
+  // Otherwise, return all logs
   try {
     const jobs = await getAllJobs()
     const allLogs: Array<{ jobId: string; type: string; step: string; message: string; data?: unknown; timestamp: string }> = []
@@ -29,10 +56,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Sort by timestamp, most recent first
     allLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
 
-    res.json({ logs: allLogs.slice(0, 100) }) // Last 100 logs
+    return res.json({ logs: allLogs.slice(0, 100) })
   } catch (error) {
     console.error('[All Logs] Error:', error)
-    res.status(500).json({
+    return res.status(500).json({
       logs: [],
       error: 'Database error',
       message: error instanceof Error ? error.message : 'Unknown error'
