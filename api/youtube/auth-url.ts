@@ -18,12 +18,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const clientId = process.env.YOUTUBE_CLIENT_ID
   const clientSecret = process.env.YOUTUBE_CLIENT_SECRET
-  const vercelUrl = process.env.VERCEL_URL || 'https://video-automation-ten.vercel.app'
-  const redirectUri = process.env.YOUTUBE_REDIRECT_URI || `${vercelUrl}/api/youtube/callback`
+  
+  // Use exact redirect URI - must match Google Cloud Console exactly
+  const redirectUri = process.env.YOUTUBE_REDIRECT_URI || 'https://video-automation-ten.vercel.app/api/youtube/callback'
 
   if (!clientId || !clientSecret) {
     return res.status(400).json({ error: 'YouTube OAuth not configured' })
   }
+
+  // Log for debugging (remove in production)
+  console.log('OAuth Config:', {
+    clientId: clientId.substring(0, 20) + '...',
+    redirectUri,
+    hasRedirectUriEnv: !!process.env.YOUTUBE_REDIRECT_URI
+  })
 
   const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri)
 
