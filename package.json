@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "AI-powered video automation with Gemini and YouTube integration",
   "engines": {
-    "node": "18.x"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
