@@ -22,14 +22,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Job ID is required' })
   }
 
-  const job = getJob(jobId)
+  try {
+    const job = await getJob(jobId)
 
-  if (!job) {
-    return res.status(404).json({ 
+    if (!job) {
+      return res.status(404).json({ 
+        logs: [],
+        error: 'Job not found'
+      })
+    }
+
+    res.json({ logs: job.logs || [] })
+  } catch (error) {
+    console.error('[Logs] Error:', error)
+    res.status(500).json({
       logs: [],
-      error: 'Job not found'
+      error: 'Database error',
+      message: error instanceof Error ? error.message : 'Unknown error'
     })
   }
-
-  res.json({ logs: job.logs || [] })
 }

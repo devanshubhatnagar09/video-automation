@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { getJob } from '../jobs.js'
+import { getJob, getAllJobs } from '../jobs.js'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Set CORS headers
@@ -22,18 +22,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Job ID is required' })
   }
 
-  const job = getJob(jobId)
+  try {
+    const job = await getJob(jobId)
 
-  if (!job) {
-    return res.status(404).json({ 
+    if (!job) {
+      const allJobs = await getAllJobs()
+      console.log(`[Status] Job ${jobId} not found. Available jobs:`, Array.from(allJobs.keys()))
+      return res.status(404).json({ 
+        success: false,
+        error: 'Job not found',
+        note: 'Job may have expired or was not found in database.',
+        jobId: jobId
+      })
+    }
+    
+    console.log(`[Status] Job ${jobId} found:`, { status: job.status, step: job.step })
+
+    res.json({ 
+      success: true,
+      ...job
+    })
+  } catch (error) {
+    console.error('[Status] Error:', error)
+    res.status(500).json({
       success: false,
-      error: 'Job not found',
-      note: 'Job may have expired or serverless function was restarted. In-memory storage resets on cold starts.'
+      error: 'Database error',
+      message: error instanceof Error ? error.message : 'Unknown error'
     })
   }
 
-  res.json({ 
-    success: true,
-    ...job
-  })
-}

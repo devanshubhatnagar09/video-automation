@@ -123,6 +123,9 @@ export default function Dashboard() {
       // Poll for status and logs
       isPollingRef.current = true
       
+      // Small delay before first poll to ensure job is initialized
+      await new Promise(resolve => setTimeout(resolve, 500))
+      
       const pollStatus = async () => {
         // Stop polling if flag is false
         if (!isPollingRef.current) {
@@ -212,8 +215,19 @@ export default function Dashboard() {
               pollingTimeoutRef.current = setTimeout(pollStatus, 1500)
             }
           }
-        } catch (err) {
+        } catch (err: any) {
           console.error('Poll error:', err)
+          
+          // Handle "Job not found" - might be cold start, wait and retry
+          if (err?.response?.status === 404 || err?.response?.data?.error === 'Job not found') {
+            console.log('Job not found, might be cold start. Retrying...')
+            // Continue polling with longer delay
+            if (isPollingRef.current) {
+              pollingTimeoutRef.current = setTimeout(pollStatus, 3000)
+            }
+            return
+          }
+          
           // Continue polling only if flag is still true
           if (isPollingRef.current) {
             pollingTimeoutRef.current = setTimeout(pollStatus, 2000)
