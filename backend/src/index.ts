@@ -7,6 +7,7 @@ import { youtubeRouter } from './routes/youtube.js'
 import { workflowRouter } from './routes/workflow.js'
 import { cronRouter } from './routes/cron.js'
 import { historyRouter } from './routes/history.js'
+import { logsRouter } from './routes/logs.js'
 import { initCronJobs } from './cron/scheduler.js'
 
 dotenv.config()
@@ -56,6 +57,7 @@ app.use('/api/youtube', youtubeRouter)
 app.use('/api/workflow', workflowRouter)
 app.use('/api/cron', cronRouter)
 app.use('/api/history', historyRouter)
+app.use('/', logsRouter) // User logs endpoint at root level
 
 // Initialize cron jobs
 initCronJobs()

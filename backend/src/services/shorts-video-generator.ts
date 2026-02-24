@@ -30,8 +30,12 @@ export interface ShortsVideoResult {
 
 /**
  * Generate 9:16 vertical image using Pollinations.ai (FREE)
+ * With retry logic for reliability
  */
-async function generateVerticalImage(prompt: string, jobId: string): Promise<string | null> {
+async function generateVerticalImage(prompt: string, jobId: string, retryCount = 0): Promise<string | null> {
+  const MAX_RETRIES = 3
+  const RETRY_DELAY = 2000 // 2 seconds
+  
   try {
     ensureTempDir()
     
@@ -41,34 +45,109 @@ async function generateVerticalImage(prompt: string, jobId: string): Promise<str
     const seed = Math.floor(Math.random() * 1000000)
     const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1080&height=1920&seed=${seed}&nologo=true`
     
-    console.log('🖼️ Generating 9:16 vertical image...')
+    console.log(`🖼️ Generating 9:16 vertical image... (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`)
+    console.log(`📝 Prompt: ${shortPrompt.slice(0, 50)}...`)
+    console.log(`🔗 URL: ${imageUrl.substring(0, 100)}...`)
     
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 90000) // 90s timeout
+    const timeoutId = setTimeout(() => {
+      controller.abort()
+      console.error('⏱️ Image generation timeout after 60 seconds')
+    }, 60000) // 60s timeout (reduced from 90s)
     
-    const response = await fetch(imageUrl, { 
-      signal: controller.signal,
-      headers: { 'User-Agent': 'VideoAutomation/1.0' }
-    })
-    clearTimeout(timeoutId)
+    let response: Response
+    try {
+      response = await fetch(imageUrl, { 
+        signal: controller.signal,
+        headers: { 
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'image/jpeg,image/png,image/webp,*/*',
+          'Referer': 'https://pollinations.ai/'
+        }
+      })
+      clearTimeout(timeoutId)
+    } catch (fetchError) {
+      clearTimeout(timeoutId)
+      const err = fetchError as Error
+      if (err.name === 'AbortError') {
+        console.error('⏱️ Request timeout')
+        if (retryCount < MAX_RETRIES) {
+          console.log(`🔄 Retrying in ${RETRY_DELAY}ms...`)
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+          return generateVerticalImage(prompt, jobId, retryCount + 1)
+        }
+        throw new Error('Image generation timeout after multiple retries')
+      }
+      console.error(`❌ Fetch error: ${err.message}`)
+      if (retryCount < MAX_RETRIES) {
+        console.log(`🔄 Retrying in ${RETRY_DELAY}ms...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return generateVerticalImage(prompt, jobId, retryCount + 1)
+      }
+      throw new Error(`Fetch failed after retries: ${err.message}`)
+    }
     
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+      const errorText = await response.text().catch(() => 'Unknown error')
+      console.error(`❌ HTTP ${response.status}: ${errorText.slice(0, 200)}`)
+      if (retryCount < MAX_RETRIES && response.status >= 500) {
+        // Retry on server errors
+        console.log(`🔄 Retrying due to server error (${response.status})...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return generateVerticalImage(prompt, jobId, retryCount + 1)
+      }
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+    }
+    
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.startsWith('image/')) {
+      const text = await response.text()
+      console.error(`❌ Invalid content type: ${contentType}`)
+      console.error(`Response preview: ${text.slice(0, 200)}`)
+      if (retryCount < MAX_RETRIES) {
+        console.log(`🔄 Retrying due to invalid content type...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return generateVerticalImage(prompt, jobId, retryCount + 1)
+      }
+      throw new Error(`Invalid content type: ${contentType}. Expected image.`)
     }
     
     const buffer = await response.arrayBuffer()
+    console.log(`📦 Received ${buffer.byteLength} bytes`)
+    
     if (buffer.byteLength < 5000) {
-      throw new Error('Image too small')
+      const text = new TextDecoder().decode(buffer.slice(0, 200))
+      console.error(`❌ Image too small (${buffer.byteLength} bytes). Response: ${text}`)
+      if (retryCount < MAX_RETRIES) {
+        console.log(`🔄 Retrying due to small response...`)
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+        return generateVerticalImage(prompt, jobId, retryCount + 1)
+      }
+      throw new Error(`Image too small (${buffer.byteLength} bytes). May be an error page.`)
     }
     
     const imagePath = path.join(TEMP_DIR, `shorts_bg_${jobId}.jpg`)
-    fs.writeFileSync(imagePath, Buffer.from(buffer))
     
-    console.log(`✅ Image saved (${Math.round(buffer.byteLength/1024)}KB)`)
-    return imagePath
+    try {
+      fs.writeFileSync(imagePath, Buffer.from(buffer))
+      const stats = fs.statSync(imagePath)
+      console.log(`✅ Image saved: ${imagePath} (${Math.round(stats.size/1024)}KB)`)
+      return imagePath
+    } catch (writeError) {
+      const err = writeError as Error
+      console.error(`❌ Failed to write image file: ${err.message}`)
+      console.error(`Temp dir: ${TEMP_DIR}, exists: ${fs.existsSync(TEMP_DIR)}`)
+      throw new Error(`Failed to write image: ${err.message}`)
+    }
   } catch (error) {
     const err = error as Error
-    console.error('❌ Image generation failed:', err.message)
+    console.error(`❌ Image generation failed (attempt ${retryCount + 1}):`, err.message)
+    if (retryCount < MAX_RETRIES) {
+      console.log(`🔄 Retrying in ${RETRY_DELAY}ms...`)
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY))
+      return generateVerticalImage(prompt, jobId, retryCount + 1)
+    }
+    console.error('Stack:', err.stack)
     return null
   }
 }
@@ -620,12 +699,41 @@ export async function generateShortsVideo(
 
     // Step 1: Generate background image
     log('📸 Step 1: Generating background image...')
-    const imagePath = await generateVerticalImage(imagePrompt, jobId)
+    log(`📝 Image prompt: ${imagePrompt.slice(0, 100)}...`)
+    
+    let imagePath = await generateVerticalImage(imagePrompt, jobId)
     
     if (!imagePath) {
-      return {
-        success: false,
-        error: 'Failed to generate background image'
+      log('❌ Image generation failed - trying multiple fallbacks...')
+      
+      // Try fallback 1: Simple prompt
+      const fallbackPrompts = [
+        'beautiful abstract background, vertical, colorful, high quality',
+        'gradient background, vertical, modern, vibrant colors',
+        'minimalist background, vertical, clean, professional'
+      ]
+      
+      for (let i = 0; i < fallbackPrompts.length; i++) {
+        log(`🔄 Fallback attempt ${i + 1}/${fallbackPrompts.length}...`)
+        const fallbackImagePath = await generateVerticalImage(fallbackPrompts[i], `${jobId}_fallback${i}`)
+        
+        if (fallbackImagePath) {
+          log(`✅ Fallback ${i + 1} succeeded`)
+          imagePath = path.join(TEMP_DIR, `shorts_bg_${jobId}.jpg`)
+          fs.copyFileSync(fallbackImagePath, imagePath)
+          if (fs.existsSync(fallbackImagePath)) {
+            fs.unlinkSync(fallbackImagePath)
+          }
+          break
+        }
+      }
+      
+      if (!imagePath) {
+        log('❌ All fallback attempts failed')
+        return {
+          success: false,
+          error: 'Failed to generate background image after multiple attempts. Pollinations.ai may be unavailable or rate-limited. Please try again in a few minutes.'
+        }
       }
     }
 

@@ -6,6 +6,7 @@ import { uploadToYouTube } from './youtube.js'
 import { authenticateToken, AuthRequest } from '../middleware/auth.js'
 import connectDB from '../db/mongodb.js'
 import { UserSettings } from '../models/UserSettings.js'
+import { Job } from '../models/Job.js'
 import { decrypt } from '../utils/encryption.js'
 
 export const workflowRouter = Router()
@@ -51,8 +52,8 @@ interface JobStatus {
 // Store job status and logs in memory
 const jobs = new Map<string, JobStatus>()
 
-// Helper to add log
-function addLog(jobId: string, log: Omit<LogEntry, 'timestamp'>) {
+// Helper to add log (saves to both memory and MongoDB)
+async function addLog(jobId: string, userId: string, log: Omit<LogEntry, 'timestamp'>) {
   const job = jobs.get(jobId)
   if (job) {
     const entry: LogEntry = {
@@ -63,6 +64,30 @@ function addLog(jobId: string, log: Omit<LogEntry, 'timestamp'>) {
     console.log(`[${jobId.slice(0, 8)}] [${log.type.toUpperCase()}] [${log.step}] ${log.message}`)
     if (log.data) {
       console.log(JSON.stringify(log.data, null, 2))
+    }
+    
+    // Also save to MongoDB
+    try {
+      await connectDB()
+      await Job.findOneAndUpdate(
+        { jobId },
+        {
+          $set: {
+            jobId,
+            userId,
+            status: job.status,
+            step: job.step,
+            message: job.message,
+            data: job.data,
+            error: job.error,
+          },
+          $push: { logs: entry }
+        },
+        { upsert: true }
+      )
+    } catch (err) {
+      console.error('Failed to save log to MongoDB:', err)
+      // Don't fail the workflow if MongoDB save fails
     }
   }
 }
@@ -93,7 +118,21 @@ workflowRouter.post('/start', authenticateToken, async (req: AuthRequest, res: R
       logs: [] 
     })
 
-    addLog(jobId, { type: 'info', step: 'init', message: 'Workflow started' })
+    // Save initial job to MongoDB
+    try {
+      await Job.create({
+        jobId,
+        userId: req.userId,
+        status: 'running',
+        step: 'idea',
+        message: 'Starting workflow...',
+        logs: []
+      })
+    } catch (err) {
+      console.error('Failed to create job in MongoDB:', err)
+    }
+
+    addLog(jobId, req.userId, { type: 'info', step: 'init', message: 'Workflow started' })
 
     // Run workflow in background with userId
     runWorkflow(jobId, apiKey, req.userId)
@@ -154,6 +193,28 @@ workflowRouter.get('/logs/:jobId?', (req: Request, res: Response) => {
 
 // This is now handled in /logs route above (when no jobId provided)
 
+// Helper to update job status in MongoDB
+async function updateJobStatus(jobId: string, userId: string, updates: Partial<JobStatus>) {
+  try {
+    await connectDB()
+    await Job.findOneAndUpdate(
+      { jobId, userId },
+      {
+        $set: {
+          status: updates.status,
+          step: updates.step,
+          message: updates.message,
+          data: updates.data,
+          error: updates.error,
+        }
+      }
+    )
+  } catch (err) {
+    console.error('Failed to update job status in MongoDB:', err)
+    // Don't fail the workflow if MongoDB update fails
+  }
+}
+
 // Background workflow runner - YouTube Shorts style
 async function runWorkflow(jobId: string, apiKey: string, userId: string) {
   const job = jobs.get(jobId)!
@@ -165,7 +226,8 @@ async function runWorkflow(jobId: string, apiKey: string, userId: string) {
     // ============ STEP 1: Generate Video Content ============
     job.step = 'idea'
     job.message = 'Generating video content...'
-    addLog(jobId, { type: 'step', step: 'idea', message: '🎯 Step 1: Generating YouTube Shorts content' })
+    await updateJobStatus(jobId, userId, { step: job.step, message: job.message })
+    addLog(jobId, userId, { type: 'step', step: 'idea', message: '🎯 Step 1: Generating YouTube Shorts content' })
 
     // Choose prompt based on language setting
     const contentPrompt = videoSettings.language === 'hindi' 
@@ -208,7 +270,7 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
   "category": "Education/Entertainment/Motivation/Facts/Comedy"
 }`
 
-    addLog(jobId, { 
+    addLog(jobId, userId, { 
       type: 'input', 
       step: 'idea', 
       message: '📤 Asking Gemini for Shorts content',
@@ -218,7 +280,7 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
     const contentResult = await model.generateContent(contentPrompt)
     const contentText = contentResult.response.text()
     
-    addLog(jobId, { 
+    addLog(jobId, userId, { 
       type: 'output', 
       step: 'idea', 
       message: '📥 Received content from Gemini',
@@ -231,7 +293,7 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
     }
     
     const content = JSON.parse(contentMatch[0])
-    addLog(jobId, { 
+    addLog(jobId, userId, { 
       type: 'info', 
       step: 'idea', 
       message: `✅ Content generated: "${content.title}"`,
@@ -240,16 +302,18 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
 
     job.message = `Content: ${content.title}`
     job.data = { content }
+    await updateJobStatus(jobId, userId, { step: job.step, message: job.message, data: job.data })
 
     // ============ STEP 2: Generate Video (Image + Audio + Subtitles) ============
     job.step = 'video'
     job.message = '🎬 Creating YouTube Shorts video...'
-    addLog(jobId, { 
+    await updateJobStatus(jobId, userId, { step: job.step, message: job.message })
+    addLog(jobId, userId, { 
       type: 'step', 
       step: 'video', 
       message: '🎥 Step 2: Creating video (Image + TTS Audio + Subtitles)' 
     })
-    addLog(jobId, { 
+    addLog(jobId, userId, { 
       type: 'info', 
       step: 'video', 
       message: '📐 Format: 9:16 vertical (1080x1920) for YouTube Shorts',
@@ -267,7 +331,7 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
       jobId,
       userId,
       (msg) => {
-        addLog(jobId, { type: 'info', step: 'video', message: msg })
+        addLog(jobId, userId, { type: 'info', step: 'video', message: msg })
       },
       {
         voice: videoSettings.voice,
@@ -279,7 +343,7 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
     
     if (videoResult.success && (videoResult.videoPath || videoResult.videoFileId)) {
       videoPath = videoResult.videoPath || null
-      addLog(jobId, { 
+      addLog(jobId, userId, { 
         type: 'output', 
         step: 'video', 
         message: `✅ Video created! Duration: ${videoResult.duration?.toFixed(1)}s`,
@@ -292,7 +356,7 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
       })
       job.message = `Video created (${videoResult.duration?.toFixed(1)}s)`
     } else {
-      addLog(jobId, { 
+      addLog(jobId, userId, { 
         type: 'error', 
         step: 'video', 
         message: `⚠️ Video generation failed: ${videoResult.error}`,
@@ -307,11 +371,13 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
       videoFileId: videoResult.videoFileId,
       duration: videoResult.duration 
     }
+    await updateJobStatus(jobId, userId, { step: job.step, message: job.message, data: job.data })
 
     // ============ STEP 3: YouTube Upload ============
     job.step = 'upload'
     job.message = '📺 Uploading to YouTube...'
-    addLog(jobId, { 
+    await updateJobStatus(jobId, userId, { step: job.step, message: job.message })
+    addLog(jobId, userId, { 
       type: 'step', 
       step: 'upload', 
       message: '📺 Step 3: Uploading to YouTube' 
@@ -333,7 +399,7 @@ ${content.script}
 
 ${content.tags.join(' ')}`
 
-        addLog(jobId, { 
+        addLog(jobId, userId, { 
           type: 'input', 
           step: 'upload', 
           message: '📤 Uploading to YouTube...',
@@ -356,7 +422,7 @@ ${content.tags.join(' ')}`
         youtubeUrl = uploadResult.url
         uploadSuccess = true
         
-        addLog(jobId, { 
+        addLog(jobId, userId, { 
           type: 'output', 
           step: 'upload', 
           message: '✅ Video uploaded to YouTube!',
@@ -369,7 +435,7 @@ ${content.tags.join(' ')}`
         // Cleanup after successful upload
         try {
           await cleanupAllJobFiles(jobId, videoResult.videoFileId)
-          addLog(jobId, { 
+          addLog(jobId, userId, { 
             type: 'info', 
             step: 'upload', 
             message: '🗑️ Cleaned up temp files and GridFS video'
@@ -381,7 +447,7 @@ ${content.tags.join(' ')}`
         }
       } catch (uploadError: unknown) {
         const err = uploadError as Error
-        addLog(jobId, { 
+        addLog(jobId, userId, { 
           type: 'error', 
           step: 'upload', 
           message: `⚠️ YouTube upload failed: ${err.message}`,
@@ -389,7 +455,7 @@ ${content.tags.join(' ')}`
         })
         youtubeUrl = `UPLOAD_FAILED`
         // Don't delete video file on upload failure - user might want to retry
-        addLog(jobId, { 
+        addLog(jobId, userId, { 
           type: 'info', 
           step: 'upload', 
           message: '💾 Video file kept for retry'
@@ -397,7 +463,7 @@ ${content.tags.join(' ')}`
       }
     } else {
       youtubeUrl = `NO_VIDEO`
-      addLog(jobId, { 
+      addLog(jobId, userId, { 
         type: 'error', 
         step: 'upload', 
         message: '⚠️ No video file available for upload'
@@ -415,8 +481,14 @@ ${content.tags.join(' ')}`
       youtubeUrl,
       uploadSuccess
     }
+    await updateJobStatus(jobId, userId, { 
+      status: job.status, 
+      step: job.step, 
+      message: job.message, 
+      data: job.data 
+    })
 
-    addLog(jobId, { 
+    addLog(jobId, userId, { 
       type: 'info', 
       step: 'complete', 
       message: uploadSuccess 
@@ -436,7 +508,7 @@ ${content.tags.join(' ')}`
     const err = error as { message?: string }
     const currentStep = job.step || 'unknown'
     
-    addLog(jobId, { 
+    addLog(jobId, userId, { 
       type: 'error', 
       step: currentStep, 
       message: `❌ Error: ${err.message || 'Unknown error'}`,
@@ -446,6 +518,12 @@ ${content.tags.join(' ')}`
     job.status = 'error'
     job.error = err.message || 'Workflow failed'
     job.message = `Error in ${currentStep}: ${err.message}`
+    await updateJobStatus(jobId, userId, { 
+      status: job.status, 
+      step: job.step, 
+      message: job.message, 
+      error: job.error 
+    })
   }
 }
 
@@ -475,7 +553,21 @@ workflowRouter.post('/trigger', authenticateToken, async (req: AuthRequest, res:
       logs: [] 
     })
 
-    addLog(jobId, { type: 'info', step: 'init', message: 'Cron workflow triggered' })
+    // Save initial job to MongoDB
+    try {
+      await Job.create({
+        jobId,
+        userId: req.userId,
+        status: 'running',
+        step: 'idea',
+        message: 'Starting scheduled workflow...',
+        logs: []
+      })
+    } catch (err) {
+      console.error('Failed to create job in MongoDB:', err)
+    }
+
+    addLog(jobId, req.userId, { type: 'info', step: 'init', message: 'Cron workflow triggered' })
     runWorkflow(jobId, apiKey, req.userId)
 
     res.json({ success: true, jobId, message: 'Workflow triggered' })
