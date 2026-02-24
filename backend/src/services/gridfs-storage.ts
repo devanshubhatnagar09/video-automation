@@ -1,13 +1,13 @@
-import mongoose, { GridFSBucket } from 'mongoose'
+import mongoose from 'mongoose'
 import { Readable } from 'stream'
 import connectDB from '../db/mongodb.js'
 
-let gridFSBucket: GridFSBucket | null = null
+let gridFSBucket: mongoose.mongo.GridFSBucket | null = null
 
 /**
  * Initialize GridFS bucket for file storage
  */
-async function getGridFSBucket(): Promise<GridFSBucket> {
+async function getGridFSBucket(): Promise<mongoose.mongo.GridFSBucket> {
   await connectDB()
   
   if (!mongoose.connection.db) {
@@ -44,7 +44,7 @@ export async function uploadToGridFS(
       resolve(uploadStream.id.toString())
     })
     
-    uploadStream.on('error', (error) => {
+    uploadStream.on('error', (error: Error) => {
       reject(error)
     })
   })
@@ -69,7 +69,7 @@ export async function downloadFromGridFS(fileId: string): Promise<Buffer> {
       resolve(Buffer.concat(chunks))
     })
     
-    downloadStream.on('error', (error) => {
+    downloadStream.on('error', (error: Error) => {
       reject(error)
     })
   })
@@ -83,7 +83,7 @@ export async function deleteFromGridFS(fileId: string): Promise<void> {
   const ObjectId = mongoose.Types.ObjectId
   
   return new Promise((resolve, reject) => {
-    bucket.delete(new ObjectId(fileId), (error) => {
+    bucket.delete(new ObjectId(fileId), (error: Error | null) => {
       if (error) {
         reject(error)
       } else {
@@ -105,21 +105,21 @@ export async function getFileInfo(fileId: string): Promise<{
   const bucket = await getGridFSBucket()
   const ObjectId = mongoose.Types.ObjectId
   
-  return new Promise((resolve, reject) => {
-    bucket.find({ _id: new ObjectId(fileId) }).toArray((error, files) => {
-      if (error) {
-        reject(error)
-      } else if (files && files.length > 0) {
-        const file = files[0]
-        resolve({
-          filename: file.filename,
-          length: file.length,
-          uploadDate: file.uploadDate,
-          metadata: file.metadata
-        })
-      } else {
-        resolve(null)
+  try {
+    const files = await bucket.find({ _id: new ObjectId(fileId) }).toArray()
+    
+    if (files && files.length > 0) {
+      const file = files[0]
+      return {
+        filename: file.filename,
+        length: file.length,
+        uploadDate: file.uploadDate,
+        metadata: file.metadata
       }
-    })
-  })
+    }
+    
+    return null
+  } catch (error) {
+    throw error
+  }
 }
