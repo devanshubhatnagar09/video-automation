@@ -133,10 +133,10 @@ workflowUploadRouter.post(
         job.data?.content?.imagePrompt || 'background image',
         job.data?.content?.script || '',
         jobId,
-        req.userId,
+        req.userId!,
         async (msg) => {
           console.log(`[${jobId}] ${msg}`)
-          await addLogToJob(jobId, req.userId, {
+          await addLogToJob(jobId, req.userId!, {
             type: 'info',
             step: 'video',
             message: msg
