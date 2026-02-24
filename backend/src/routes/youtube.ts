@@ -1,69 +1,155 @@
 import { Router, Request, Response } from 'express'
 import { google } from 'googleapis'
-import dotenv from 'dotenv'
-
-// Load env vars
-dotenv.config()
+import { Credentials } from 'google-auth-library'
+import { authenticateToken, AuthRequest } from '../middleware/auth.js'
+import connectDB from '../db/mongodb.js'
+import { UserSettings } from '../models/UserSettings.js'
+import { decrypt, encrypt } from '../utils/encryption.js'
 
 export const youtubeRouter = Router()
 
-import { Credentials } from 'google-auth-library'
-
-// Store tokens in memory (in production, use a database)
-let youtubeTokens: Credentials | null = null
-
-// Lazy initialization of OAuth client
-let _oauth2Client: InstanceType<typeof google.auth.OAuth2> | null = null
-
-function getOAuth2Client() {
-  if (!_oauth2Client) {
-    const clientId = process.env.YOUTUBE_CLIENT_ID
-    const clientSecret = process.env.YOUTUBE_CLIENT_SECRET
-    const redirectUri = process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:3001/api/youtube/callback'
-    
-    console.log('YouTube OAuth Config:', { 
-      clientId: clientId ? clientId.substring(0, 20) + '...' : 'NOT SET',
-      redirectUri 
-    })
-    
-    _oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri)
+// Get OAuth client from MongoDB (per user)
+async function getOAuth2Client(userId: string) {
+  await connectDB()
+  const settings = await UserSettings.findOne({ userId })
+  
+  if (!settings || !settings.youtubeClientId || !settings.youtubeClientSecret || !settings.youtubeRedirectUri) {
+    throw new Error('YouTube OAuth credentials not configured')
   }
-  return _oauth2Client
+
+  const clientId = decrypt(settings.youtubeClientId)
+  const clientSecret = decrypt(settings.youtubeClientSecret)
+  const redirectUri = decrypt(settings.youtubeRedirectUri)
+  
+  return new google.auth.OAuth2(clientId, clientSecret, redirectUri)
 }
 
-// Get YouTube auth URL
-youtubeRouter.get('/auth-url', (_req: Request, res: Response) => {
-  const scopes = [
-    'https://www.googleapis.com/auth/youtube.upload',
-    'https://www.googleapis.com/auth/youtube',
-    'https://www.googleapis.com/auth/youtube.readonly'
-  ]
+// Get YouTube tokens from MongoDB
+async function getYouTubeTokens(userId: string): Promise<Credentials | null> {
+  await connectDB()
+  const settings = await UserSettings.findOne({ userId })
+  
+  if (!settings || !settings.youtubeTokens) {
+    return null
+  }
 
-  const oauth2Client = getOAuth2Client()
-  const url = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    scope: scopes,
-    prompt: 'consent'
-  })
+  const tokens = settings.youtubeTokens
+  return {
+    access_token: tokens.access_token ? decrypt(tokens.access_token) : undefined,
+    refresh_token: tokens.refresh_token ? decrypt(tokens.refresh_token) : undefined,
+    expiry_date: tokens.expiry_date,
+  }
+}
 
-  res.json({ url })
+// Save YouTube tokens to MongoDB (encrypted)
+async function saveYouTubeTokens(userId: string, tokens: Credentials) {
+  await connectDB()
+  await UserSettings.findOneAndUpdate(
+    { userId },
+    {
+      youtubeTokens: {
+        access_token: tokens.access_token ? encrypt(tokens.access_token) : undefined,
+        refresh_token: tokens.refresh_token ? encrypt(tokens.refresh_token) : undefined,
+        expiry_date: tokens.expiry_date,
+      },
+    },
+    { upsert: true, new: true }
+  )
+}
+
+// Save YouTube OAuth credentials (encrypted)
+youtubeRouter.post('/credentials', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await connectDB()
+    
+    const { encryptedClientId, encryptedClientSecret, encryptedRedirectUri } = req.body
+
+    if (!encryptedClientId || !encryptedClientSecret || !encryptedRedirectUri) {
+      return res.status(400).json({ error: 'All YouTube credentials are required' })
+    }
+
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    // Validate decryption works
+    try {
+      decrypt(encryptedClientId)
+      decrypt(encryptedClientSecret)
+      decrypt(encryptedRedirectUri)
+    } catch (error) {
+      return res.status(400).json({ error: 'Invalid encrypted credentials format' })
+    }
+
+    // Save encrypted credentials
+    await UserSettings.findOneAndUpdate(
+      { userId: req.userId },
+      {
+        youtubeClientId: encryptedClientId,
+        youtubeClientSecret: encryptedClientSecret,
+        youtubeRedirectUri: encryptedRedirectUri,
+      },
+      { upsert: true, new: true }
+    )
+
+    res.json({ success: true, message: 'YouTube credentials saved' })
+  } catch (error: unknown) {
+    const err = error as { message?: string }
+    console.error('Save credentials error:', err)
+    res.status(500).json({ error: err.message || 'Failed to save credentials' })
+  }
 })
 
-// OAuth callback
+// Get YouTube auth URL
+youtubeRouter.get('/auth-url', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const scopes = [
+      'https://www.googleapis.com/auth/youtube.upload',
+      'https://www.googleapis.com/auth/youtube',
+      'https://www.googleapis.com/auth/youtube.readonly'
+    ]
+
+    const oauth2Client = await getOAuth2Client(req.userId)
+    const url = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: scopes,
+      prompt: 'consent'
+    })
+
+    res.json({ url })
+  } catch (error: unknown) {
+    const err = error as { message?: string }
+    console.error('Auth URL error:', err)
+    res.status(400).json({ error: err.message || 'YouTube OAuth not configured' })
+  }
+})
+
+// OAuth callback (GET - for browser redirect)
 youtubeRouter.get('/callback', async (req: Request, res: Response) => {
   try {
-    const { code } = req.query
+    const { code, state } = req.query
 
     if (!code || typeof code !== 'string') {
       return res.status(400).send('Missing authorization code')
     }
 
-    const oauth2Client = getOAuth2Client()
+    // State contains userId (should be encrypted in production)
+    if (!state || typeof state !== 'string') {
+      return res.status(400).send('Missing state parameter')
+    }
+
+    const userId = state // In production, decrypt this
+
+    const oauth2Client = await getOAuth2Client(userId)
     const { tokens } = await oauth2Client.getToken(code)
-    oauth2Client.setCredentials(tokens)
-    youtubeTokens = tokens
+    await saveYouTubeTokens(userId, tokens)
 
     // Get channel info
+    oauth2Client.setCredentials(tokens)
     const youtube = google.youtube({ version: 'v3', auth: oauth2Client })
     const channelResponse = await youtube.channels.list({
       part: ['snippet'],
@@ -73,7 +159,6 @@ youtubeRouter.get('/callback', async (req: Request, res: Response) => {
     const channel = channelResponse.data.items?.[0]
     const channelName = channel?.snippet?.title || 'YouTube Channel'
 
-    // Send success message to opener window
     res.send(`
       <!DOCTYPE html>
       <html>
@@ -143,7 +228,7 @@ youtubeRouter.get('/callback', async (req: Request, res: Response) => {
 })
 
 // POST callback for code exchange
-youtubeRouter.post('/callback', async (req: Request, res: Response) => {
+youtubeRouter.post('/callback', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const { code } = req.body
 
@@ -151,12 +236,16 @@ youtubeRouter.post('/callback', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'Missing authorization code' })
     }
 
-    const oauth2Client = getOAuth2Client()
+    if (!req.userId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' })
+    }
+
+    const oauth2Client = await getOAuth2Client(req.userId)
     const { tokens } = await oauth2Client.getToken(code)
-    oauth2Client.setCredentials(tokens)
-    youtubeTokens = tokens
+    await saveYouTubeTokens(req.userId, tokens)
 
     // Get channel info
+    oauth2Client.setCredentials(tokens)
     const youtube = google.youtube({ version: 'v3', auth: oauth2Client })
     const channelResponse = await youtube.channels.list({
       part: ['snippet'],
@@ -175,52 +264,84 @@ youtubeRouter.post('/callback', async (req: Request, res: Response) => {
 })
 
 // Disconnect YouTube
-youtubeRouter.post('/disconnect', (_req: Request, res: Response) => {
-  youtubeTokens = null
-  res.json({ success: true })
+youtubeRouter.post('/disconnect', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await connectDB()
+    
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    await UserSettings.findOneAndUpdate(
+      { userId: req.userId },
+      { $unset: { youtubeTokens: 1 } }
+    )
+
+    res.json({ success: true })
+  } catch (error: unknown) {
+    const err = error as { message?: string }
+    console.error('Disconnect error:', err)
+    res.status(500).json({ error: err.message || 'Failed to disconnect' })
+  }
 })
 
 // Check connection status
-youtubeRouter.get('/status', async (_req: Request, res: Response) => {
-  if (!youtubeTokens) {
-    return res.json({ connected: false })
-  }
-
+youtubeRouter.get('/status', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const oauth2Client = getOAuth2Client()
-    oauth2Client.setCredentials(youtubeTokens)
-    const youtube = google.youtube({ version: 'v3', auth: oauth2Client })
+    await connectDB()
     
-    const channelResponse = await youtube.channels.list({
-      part: ['snippet'],
-      mine: true
-    })
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
 
-    const channel = channelResponse.data.items?.[0]
-    
-    res.json({
-      connected: true,
-      channel: channel?.snippet?.title || 'YouTube Channel'
-    })
-  } catch {
-    youtubeTokens = null
+    const tokens = await getYouTubeTokens(req.userId)
+    if (!tokens) {
+      return res.json({ connected: false })
+    }
+
+    try {
+      const oauth2Client = await getOAuth2Client(req.userId)
+      oauth2Client.setCredentials(tokens)
+      const youtube = google.youtube({ version: 'v3', auth: oauth2Client })
+      
+      const channelResponse = await youtube.channels.list({
+        part: ['snippet'],
+        mine: true
+      })
+
+      const channel = channelResponse.data.items?.[0]
+      
+      res.json({
+        connected: true,
+        channel: channel?.snippet?.title || 'YouTube Channel'
+      })
+    } catch {
+      res.json({ connected: false })
+    }
+  } catch (error: unknown) {
+    const err = error as { message?: string }
+    console.error('Status check error:', err)
     res.json({ connected: false })
   }
 })
 
 // Upload video to YouTube
 export async function uploadToYouTube(
+  userId: string,
   videoPath: string,
   title: string,
   description: string,
   tags: string[]
 ): Promise<{ videoId: string; url: string }> {
-  if (!youtubeTokens) {
+  await connectDB()
+  
+  const tokens = await getYouTubeTokens(userId)
+  if (!tokens) {
     throw new Error('YouTube not connected')
   }
 
-  const oauth2Client = getOAuth2Client()
-  oauth2Client.setCredentials(youtubeTokens)
+  const oauth2Client = await getOAuth2Client(userId)
+  oauth2Client.setCredentials(tokens)
   const youtube = google.youtube({ version: 'v3', auth: oauth2Client })
 
   const fs = await import('fs')

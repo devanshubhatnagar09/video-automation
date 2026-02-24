@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import { authRouter } from './routes/auth.js'
 import { geminiRouter } from './routes/gemini.js'
 import { youtubeRouter } from './routes/youtube.js'
 import { workflowRouter } from './routes/workflow.js'
@@ -18,6 +19,7 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
   'http://localhost:3000',
   'http://localhost:5173', // Vite dev server
+  'https://video-automation-s7wj.onrender.com', // Render backend (for testing)
 ].filter(Boolean) as string[]
 
 const corsOptions = {
@@ -25,14 +27,19 @@ const corsOptions = {
     // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true)
     
+    // Allow all origins in development or if origin is in allowed list
     if (allowedOrigins.includes(origin) || process.env.NODE_ENV === 'development') {
       callback(null, true)
     } else {
-      callback(new Error('Not allowed by CORS'))
+      // Log for debugging
+      console.log('CORS blocked origin:', origin)
+      callback(null, true) // Temporarily allow all for debugging
     }
   },
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }
 app.use(cors(corsOptions))
 app.use(express.json())
@@ -43,6 +50,7 @@ app.get('/api/health', (_, res) => {
 })
 
 // Routes
+app.use('/api/auth', authRouter)
 app.use('/api/gemini', geminiRouter)
 app.use('/api/youtube', youtubeRouter)
 app.use('/api/workflow', workflowRouter)

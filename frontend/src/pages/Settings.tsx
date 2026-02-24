@@ -14,7 +14,7 @@ import {
   Shield
 } from 'lucide-react'
 import { useStore } from '../store/useStore'
-import { verifyGeminiKey, getYoutubeAuthUrl } from '../services/api'
+import { verifyGeminiKey, getYoutubeAuthUrl, saveYouTubeCredentials } from '../services/api'
 import toast from 'react-hot-toast'
 
 export default function Settings() {
@@ -34,6 +34,13 @@ export default function Settings() {
   const [showApiKey, setShowApiKey] = useState(false)
   const [isVerifying, setIsVerifying] = useState(false)
   const [isConnectingYoutube, setIsConnectingYoutube] = useState(false)
+  
+  // YouTube OAuth credentials
+  const [youtubeClientId, setYoutubeClientId] = useState('')
+  const [youtubeClientSecret, setYoutubeClientSecret] = useState('')
+  const [youtubeRedirectUri, setYoutubeRedirectUri] = useState('')
+  const [showYoutubeSecret, setShowYoutubeSecret] = useState(false)
+  const [isSavingCredentials, setIsSavingCredentials] = useState(false)
 
   const handleVerifyGemini = async () => {
     if (!apiKeyInput.trim()) {
@@ -54,6 +61,27 @@ export default function Settings() {
       toast.error('Failed to verify API key')
     } finally {
       setIsVerifying(false)
+    }
+  }
+
+  const handleSaveYouTubeCredentials = async () => {
+    if (!youtubeClientId || !youtubeClientSecret || !youtubeRedirectUri) {
+      toast.error('Please fill all YouTube OAuth credentials')
+      return
+    }
+
+    setIsSavingCredentials(true)
+    try {
+      const result = await saveYouTubeCredentials(youtubeClientId, youtubeClientSecret, youtubeRedirectUri)
+      if (result.success) {
+        toast.success('YouTube credentials saved!')
+      } else {
+        toast.error(result.error || 'Failed to save credentials')
+      }
+    } catch {
+      toast.error('Failed to save YouTube credentials')
+    } finally {
+      setIsSavingCredentials(false)
     }
   }
 
@@ -80,7 +108,7 @@ export default function Settings() {
       window.addEventListener('message', handleMessage)
       setIsConnectingYoutube(false)
     } catch {
-      toast.error('Failed to start YouTube authentication')
+      toast.error('Failed to start YouTube authentication. Make sure credentials are saved first.')
       setIsConnectingYoutube(false)
     }
   }
@@ -173,11 +201,87 @@ export default function Settings() {
         </div>
       </motion.div>
 
-      {/* YouTube Connection */}
+      {/* YouTube OAuth Credentials */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
+        className="glass-card rounded-2xl p-6"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-red-500 to-pink-500 flex items-center justify-center">
+            <Shield className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold">YouTube OAuth Credentials</h2>
+            <p className="text-sm text-gray-400">Configure your Google OAuth credentials (encrypted and stored securely)</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Client ID</label>
+            <input
+              type="text"
+              value={youtubeClientId}
+              onChange={(e) => setYoutubeClientId(e.target.value)}
+              placeholder="your-client-id.apps.googleusercontent.com"
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/20 transition-all"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Client Secret</label>
+            <div className="relative">
+              <input
+                type={showYoutubeSecret ? 'text' : 'password'}
+                value={youtubeClientSecret}
+                onChange={(e) => setYoutubeClientSecret(e.target.value)}
+                placeholder="GOCSPX-..."
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 pr-12 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/20 transition-all"
+              />
+              <button
+                onClick={() => setShowYoutubeSecret(!showYoutubeSecret)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-gray-400 hover:text-white transition-colors"
+              >
+                {showYoutubeSecret ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Redirect URI</label>
+            <input
+              type="text"
+              value={youtubeRedirectUri}
+              onChange={(e) => setYoutubeRedirectUri(e.target.value)}
+              placeholder="https://your-backend.onrender.com/api/youtube/callback"
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500/50 focus:ring-2 focus:ring-primary-500/20 transition-all"
+            />
+          </div>
+
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={handleSaveYouTubeCredentials}
+            disabled={isSavingCredentials}
+            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-red-500 to-pink-500 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+          >
+            {isSavingCredentials ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Shield className="w-4 h-4" />
+            )}
+            {isSavingCredentials ? 'Saving...' : 'Save Credentials'}
+          </motion.button>
+        </div>
+      </motion.div>
+
+      {/* YouTube Connection */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
         className="glass-card rounded-2xl p-6"
       >
         <div className="flex items-center gap-3 mb-6">

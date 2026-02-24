@@ -3,6 +3,10 @@ import { v4 as uuidv4 } from 'uuid'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { generateShortsVideo, VideoOptions, cleanupAllJobFiles } from '../services/shorts-video-generator.js'
 import { uploadToYouTube } from './youtube.js'
+import { authenticateToken, AuthRequest } from '../middleware/auth.js'
+import connectDB from '../db/mongodb.js'
+import { UserSettings } from '../models/UserSettings.js'
+import { decrypt } from '../utils/encryption.js'
 
 export const workflowRouter = Router()
 
@@ -63,28 +67,43 @@ function addLog(jobId: string, log: Omit<LogEntry, 'timestamp'>) {
   }
 }
 
-// Start workflow (POST version)
-workflowRouter.post('/start', async (req: Request, res: Response) => {
-  const { geminiApiKey } = req.body
+// Start workflow (POST version) - uses stored API key from MongoDB
+workflowRouter.post('/start', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await connectDB()
+    
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
 
-  if (!geminiApiKey) {
-    return res.status(400).json({ error: 'Gemini API key is required' })
+    // Get encrypted API key from MongoDB
+    const settings = await UserSettings.findOne({ userId: req.userId })
+    if (!settings || !settings.geminiApiKey) {
+      return res.status(400).json({ error: 'Gemini API key not configured. Please verify your API key first.' })
+    }
+
+    // Decrypt API key
+    const apiKey = decrypt(settings.geminiApiKey)
+
+    const jobId = uuidv4()
+    jobs.set(jobId, { 
+      status: 'running', 
+      step: 'idea', 
+      message: 'Starting workflow...', 
+      logs: [] 
+    })
+
+    addLog(jobId, { type: 'info', step: 'init', message: 'Workflow started' })
+
+    // Run workflow in background with userId
+    runWorkflow(jobId, apiKey, req.userId)
+
+    res.json({ jobId })
+  } catch (error: unknown) {
+    const err = error as { message?: string }
+    console.error('Workflow start error:', err)
+    res.status(500).json({ error: err.message || 'Failed to start workflow' })
   }
-
-  const jobId = uuidv4()
-  jobs.set(jobId, { 
-    status: 'running', 
-    step: 'idea', 
-    message: 'Starting workflow...', 
-    logs: [] 
-  })
-
-  addLog(jobId, { type: 'info', step: 'init', message: 'Workflow started' })
-
-  // Run workflow in background
-  runWorkflow(jobId, geminiApiKey)
-
-  res.json({ jobId })
 })
 
 // Get workflow status (supports both /status/:jobId and /status?jobId=xxx)
@@ -136,7 +155,7 @@ workflowRouter.get('/logs/:jobId?', (req: Request, res: Response) => {
 // This is now handled in /logs route above (when no jobId provided)
 
 // Background workflow runner - YouTube Shorts style
-async function runWorkflow(jobId: string, apiKey: string) {
+async function runWorkflow(jobId: string, apiKey: string, userId: string) {
   const job = jobs.get(jobId)!
   
   try {
@@ -316,6 +335,7 @@ ${content.tags.join(' ')}`
         })
 
         const uploadResult = await uploadToYouTube(
+          userId,
           videoPath,
           content.title,
           description,
@@ -420,24 +440,39 @@ ${content.tags.join(' ')}`
   }
 }
 
-// Manual trigger endpoint (for cron)
-workflowRouter.post('/trigger', async (req: Request, res: Response) => {
-  const apiKey = process.env.GEMINI_API_KEY || req.body.geminiApiKey
+// Manual trigger endpoint (for cron) - requires userId
+workflowRouter.post('/trigger', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    await connectDB()
+    
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
 
-  if (!apiKey) {
-    return res.status(400).json({ error: 'No API key configured' })
+    // Get encrypted API key from MongoDB
+    const settings = await UserSettings.findOne({ userId: req.userId })
+    if (!settings || !settings.geminiApiKey) {
+      return res.status(400).json({ error: 'Gemini API key not configured' })
+    }
+
+    // Decrypt API key
+    const apiKey = decrypt(settings.geminiApiKey)
+
+    const jobId = uuidv4()
+    jobs.set(jobId, { 
+      status: 'running', 
+      step: 'idea', 
+      message: 'Starting scheduled workflow...', 
+      logs: [] 
+    })
+
+    addLog(jobId, { type: 'info', step: 'init', message: 'Cron workflow triggered' })
+    runWorkflow(jobId, apiKey, req.userId)
+
+    res.json({ success: true, jobId, message: 'Workflow triggered' })
+  } catch (error: unknown) {
+    const err = error as { message?: string }
+    console.error('Trigger error:', err)
+    res.status(500).json({ error: err.message || 'Failed to trigger workflow' })
   }
-
-  const jobId = uuidv4()
-  jobs.set(jobId, { 
-    status: 'running', 
-    step: 'idea', 
-    message: 'Starting scheduled workflow...', 
-    logs: [] 
-  })
-
-  addLog(jobId, { type: 'info', step: 'init', message: 'Cron workflow triggered' })
-  runWorkflow(jobId, apiKey)
-
-  res.json({ success: true, jobId, message: 'Workflow triggered' })
 })

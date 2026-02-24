@@ -1,15 +1,29 @@
 import { Router, Request, Response } from 'express'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { decrypt } from '../utils/encryption.js'
+import { authenticateToken, AuthRequest } from '../middleware/auth.js'
+import connectDB from '../db/mongodb.js'
+import { UserSettings } from '../models/UserSettings.js'
 
 export const geminiRouter = Router()
 
-// Verify Gemini API key
-geminiRouter.post('/verify', async (req: Request, res: Response) => {
+// Verify Gemini API key (decrypts encrypted key from frontend)
+geminiRouter.post('/verify', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { apiKey } = req.body
+    await connectDB()
+    
+    const { encryptedApiKey } = req.body
 
-    if (!apiKey) {
+    if (!encryptedApiKey) {
       return res.status(400).json({ valid: false, error: 'API key is required' })
+    }
+
+    // Decrypt the API key
+    let apiKey: string
+    try {
+      apiKey = decrypt(encryptedApiKey)
+    } catch (error) {
+      return res.status(400).json({ valid: false, error: 'Invalid encrypted API key format' })
     }
 
     const genAI = new GoogleGenerativeAI(apiKey)
@@ -21,6 +35,15 @@ geminiRouter.post('/verify', async (req: Request, res: Response) => {
     const text = response.text()
 
     if (text) {
+      // Save encrypted API key to MongoDB
+      if (req.userId) {
+        await UserSettings.findOneAndUpdate(
+          { userId: req.userId },
+          { geminiApiKey: encryptedApiKey },
+          { upsert: true, new: true }
+        )
+      }
+
       res.json({ valid: true, message: 'API key verified successfully' })
     } else {
       res.json({ valid: false, error: 'Invalid response from API' })
@@ -32,15 +55,23 @@ geminiRouter.post('/verify', async (req: Request, res: Response) => {
   }
 })
 
-// Generate video idea
-geminiRouter.post('/generate-idea', async (req: Request, res: Response) => {
+// Generate video idea (uses stored API key from MongoDB)
+geminiRouter.post('/generate-idea', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { apiKey } = req.body
-
-    if (!apiKey) {
-      return res.status(400).json({ error: 'API key is required' })
+    await connectDB()
+    
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
     }
 
+    // Get encrypted API key from MongoDB
+    const settings = await UserSettings.findOne({ userId: req.userId })
+    if (!settings || !settings.geminiApiKey) {
+      return res.status(400).json({ error: 'Gemini API key not configured. Please verify your API key first.' })
+    }
+
+    // Decrypt API key
+    const apiKey = decrypt(settings.geminiApiKey)
     const genAI = new GoogleGenerativeAI(apiKey)
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
@@ -85,15 +116,29 @@ Be creative and original. Think of something that hasn't been done a million tim
   }
 })
 
-// Generate video prompt from idea
-geminiRouter.post('/generate-prompt', async (req: Request, res: Response) => {
+// Generate video prompt from idea (uses stored API key from MongoDB)
+geminiRouter.post('/generate-prompt', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { apiKey, idea } = req.body
+    await connectDB()
+    
+    const { idea } = req.body
 
-    if (!apiKey || !idea) {
-      return res.status(400).json({ error: 'API key and idea are required' })
+    if (!idea) {
+      return res.status(400).json({ error: 'Idea is required' })
     }
 
+    if (!req.userId) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    // Get encrypted API key from MongoDB
+    const settings = await UserSettings.findOne({ userId: req.userId })
+    if (!settings || !settings.geminiApiKey) {
+      return res.status(400).json({ error: 'Gemini API key not configured. Please verify your API key first.' })
+    }
+
+    // Decrypt API key
+    const apiKey = decrypt(settings.geminiApiKey)
     const genAI = new GoogleGenerativeAI(apiKey)
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 

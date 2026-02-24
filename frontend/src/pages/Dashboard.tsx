@@ -20,7 +20,6 @@ import toast from 'react-hot-toast'
 
 export default function Dashboard() {
   const { 
-    geminiApiKey, 
     youtubeConnected,
     isRunning,
     setIsRunning,
@@ -95,11 +94,10 @@ export default function Dashboard() {
     ]
   }, [videoHistory])
 
-  const canTrigger = geminiApiKey && !isRunning
+  const canTrigger = !isRunning
 
   const handleTriggerWorkflow = async () => {
     if (!canTrigger) {
-      if (!geminiApiKey) toast.error('Please add your Gemini API key in Settings')
       return
     }
 
@@ -117,7 +115,7 @@ export default function Dashboard() {
     setShowLogs(true)
 
     try {
-      const { jobId } = await startWorkflow(geminiApiKey)
+      const { jobId } = await startWorkflow()
       toast.success('Workflow started!')
 
       // Poll for status and logs
@@ -537,7 +535,7 @@ export default function Dashboard() {
       </div>
 
       {/* Quick Setup Notice */}
-      {(!geminiApiKey || !youtubeConnected) && (
+      {!youtubeConnected && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -554,12 +552,6 @@ export default function Dashboard() {
                 To start generating videos, please complete the following:
               </p>
               <ul className="mt-3 space-y-2">
-                {!geminiApiKey && (
-                  <li className="flex items-center gap-2 text-sm text-gray-300">
-                    <div className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
-                    Add your Gemini API key in Settings
-                  </li>
-                )}
                 {!youtubeConnected && (
                   <li className="flex items-center gap-2 text-sm text-gray-300">
                     <div className="w-1.5 h-1.5 rounded-full bg-yellow-400" />

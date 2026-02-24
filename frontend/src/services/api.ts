@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { encryptData } from '../utils/encryption.js'
 
 // API URL configuration
 // Development: local backend (http://localhost:3001)
@@ -20,6 +21,15 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
   timeout: 120000, // 2 minute timeout for long operations
+})
+
+// Add auth token to requests
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('authToken')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
 })
 
 export interface GenerateVideoResponse {
@@ -44,10 +54,50 @@ export interface WorkflowStatusResponse {
   data?: Record<string, unknown>
 }
 
-// Gemini API
+// Auth API
+export const signup = async (email: string, password: string, name: string): Promise<{ success: boolean; token?: string; user?: { id: string; email: string; name: string }; error?: string }> => {
+  try {
+    const response = await api.post('/auth/signup', { email, password, name })
+    if (response.data.token) {
+      localStorage.setItem('authToken', response.data.token)
+      localStorage.setItem('user', JSON.stringify(response.data.user))
+    }
+    return response.data
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: string } } }
+    return { success: false, error: err.response?.data?.error || 'Failed to sign up' }
+  }
+}
+
+export const login = async (email: string, password: string): Promise<{ success: boolean; token?: string; user?: { id: string; email: string; name: string }; error?: string }> => {
+  try {
+    const response = await api.post('/auth/login', { email, password })
+    if (response.data.token) {
+      localStorage.setItem('authToken', response.data.token)
+      localStorage.setItem('user', JSON.stringify(response.data.user))
+    }
+    return response.data
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: string } } }
+    return { success: false, error: err.response?.data?.error || 'Failed to login' }
+  }
+}
+
+export const logout = () => {
+  localStorage.removeItem('authToken')
+  localStorage.removeItem('user')
+}
+
+export const getCurrentUser = () => {
+  const userStr = localStorage.getItem('user')
+  return userStr ? JSON.parse(userStr) : null
+}
+
+// Gemini API - encrypts API key before sending
 export const verifyGeminiKey = async (apiKey: string): Promise<{ valid: boolean; error?: string }> => {
   try {
-    const response = await api.post('/gemini/verify', { apiKey })
+    const encryptedApiKey = await encryptData(apiKey)
+    const response = await api.post('/gemini/verify', { encryptedApiKey })
     return response.data
   } catch (error: unknown) {
     const err = error as { response?: { data?: { error?: string } } }
@@ -56,6 +106,28 @@ export const verifyGeminiKey = async (apiKey: string): Promise<{ valid: boolean;
 }
 
 // YouTube API
+export const saveYouTubeCredentials = async (
+  clientId: string,
+  clientSecret: string,
+  redirectUri: string
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const encryptedClientId = await encryptData(clientId)
+    const encryptedClientSecret = await encryptData(clientSecret)
+    const encryptedRedirectUri = await encryptData(redirectUri)
+    
+    const response = await api.post('/youtube/credentials', {
+      encryptedClientId,
+      encryptedClientSecret,
+      encryptedRedirectUri,
+    })
+    return response.data
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: string } } }
+    return { success: false, error: err.response?.data?.error || 'Failed to save credentials' }
+  }
+}
+
 export const getYoutubeAuthUrl = async (): Promise<{ url: string }> => {
   const response = await api.get('/youtube/auth-url')
   return response.data
@@ -104,9 +176,9 @@ export const triggerWorkflow = async (
   })
 }
 
-// Trigger workflow with POST (alternative)
-export const startWorkflow = async (geminiApiKey: string): Promise<{ jobId: string }> => {
-  const response = await api.post('/workflow/start', { geminiApiKey })
+// Trigger workflow with POST (uses stored API key from MongoDB)
+export const startWorkflow = async (): Promise<{ jobId: string }> => {
+  const response = await api.post('/workflow/start', {})
   return response.data
 }
 
