@@ -1,23 +1,23 @@
-import mongoose from 'mongoose'
+import mongoose, { Mongoose } from 'mongoose'
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/video-automation'
 
 // Connection caching for serverless environments
 declare global {
   // eslint-disable-next-line no-var
-  var mongoose: {
-    conn: typeof mongoose | null
-    promise: Promise<typeof mongoose> | null
-  }
+  var mongooseCache: {
+    conn: Mongoose | null
+    promise: Promise<Mongoose> | null
+  } | undefined
 }
 
-let cached = global.mongoose
+let cached: { conn: Mongoose | null; promise: Promise<Mongoose> | null } = global.mongooseCache || { conn: null, promise: null }
 
-if (!cached) {
-  cached = global.mongoose = { conn: null, promise: null }
+if (!global.mongooseCache) {
+  global.mongooseCache = cached
 }
 
-async function connectDB(): Promise<typeof mongoose> {
+async function connectDB(): Promise<Mongoose> {
   if (cached.conn) {
     return cached.conn
   }
