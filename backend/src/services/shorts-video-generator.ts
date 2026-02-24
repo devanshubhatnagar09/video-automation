@@ -1,7 +1,10 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import ffmpegPath from 'ffmpeg-static'
-import { spawn, execSync } from 'child_process'
+import ffmpegPathModule from 'ffmpeg-static'
+import { spawn, execSync, ChildProcess } from 'child_process'
+
+// Get FFmpeg path with null check
+const ffmpegPath: string | null = ffmpegPathModule || null
 
 // Temp directory for video generation
 const TEMP_DIR = '/Users/devanshu.bhatnagar/Documents/video-automation/backend/temp'
@@ -377,7 +380,11 @@ async function createVideoWithSyncedSubtitles(
     console.log(`📝 ASS file: ${assPath}`)
     
     let resolved = false
-    const proc = spawn(ffmpegPath, args)
+    if (!ffmpegPath) {
+      throw new Error('FFmpeg not found. Make sure ffmpeg-static is installed.')
+    }
+    
+    const proc = spawn(ffmpegPath, args) as any
     let stderr = ''
     let stdout = ''
 
@@ -455,7 +462,16 @@ async function createVideoWithSyncedSubtitles(
           }
         }, 60000)
         
-        const fallback = spawn(ffmpegPath, fallbackArgs)
+        if (!ffmpegPath) {
+          if (!fallbackResolved) {
+            fallbackResolved = true
+            clearTimeout(fallbackTimeout)
+            resolve(false)
+          }
+          return
+        }
+        
+        const fallback = spawn(ffmpegPath, fallbackArgs) as any
         fallback.on('close', (fallbackCode: number) => {
           if (fallbackResolved) return
           fallbackResolved = true
