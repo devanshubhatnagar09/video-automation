@@ -35,7 +35,7 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [showLogs, setShowLogs] = useState(true)
   const logsEndRef = useRef<HTMLDivElement>(null)
-  const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pollingTimeoutRef = useRef<number | null>(null)
   const isPollingRef = useRef(false)
 
   // Auto-scroll logs
