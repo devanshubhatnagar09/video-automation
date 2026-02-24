@@ -356,10 +356,10 @@ youtubeRouter.get('/status', authenticateToken, async (req: AuthRequest, res: Re
   }
 })
 
-// Upload video to YouTube
+// Upload video to YouTube (supports both GridFS file ID and local path)
 export async function uploadToYouTube(
   userId: string,
-  videoPath: string,
+  videoPathOrFileId: string,
   title: string,
   description: string,
   tags: string[]
@@ -376,6 +376,27 @@ export async function uploadToYouTube(
   const youtube = google.youtube({ version: 'v3', auth: oauth2Client })
 
   const fs = await import('fs')
+  const { downloadFromGridFS } = await import('../services/gridfs-storage.js')
+  
+  // Check if it's a GridFS file ID (MongoDB ObjectId format) or local path
+  const isGridFSFileId = /^[0-9a-fA-F]{24}$/.test(videoPathOrFileId)
+  
+  let videoStream: NodeJS.ReadableStream
+  
+  if (isGridFSFileId) {
+    // Download from GridFS
+    console.log('📥 Downloading video from GridFS:', videoPathOrFileId)
+    const videoBuffer = await downloadFromGridFS(videoPathOrFileId)
+    const { Readable } = await import('stream')
+    videoStream = Readable.from(videoBuffer)
+  } else {
+    // Use local file path
+    console.log('📁 Using local video file:', videoPathOrFileId)
+    if (!fs.existsSync(videoPathOrFileId)) {
+      throw new Error(`Video file not found: ${videoPathOrFileId}`)
+    }
+    videoStream = fs.createReadStream(videoPathOrFileId)
+  }
   
   const response = await youtube.videos.insert({
     part: ['snippet', 'status'],
@@ -392,7 +413,7 @@ export async function uploadToYouTube(
       }
     },
     media: {
-      body: fs.createReadStream(videoPath)
+      body: videoStream
     }
   })
 

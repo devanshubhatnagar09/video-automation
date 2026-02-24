@@ -1,13 +1,18 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import * as os from 'os'
 import ffmpegPathModule from 'ffmpeg-static'
 import { spawn, execSync, ChildProcess } from 'child_process'
+import { uploadToGridFS, deleteFromGridFS } from './gridfs-storage.js'
+import connectDB from '../db/mongodb.js'
+import { MediaFile } from '../models/MediaFile.js'
+import mongoose from 'mongoose'
 
 // Get FFmpeg path with null check
 const ffmpegPath: string | null = ffmpegPathModule || null
 
-// Temp directory for video generation
-const TEMP_DIR = '/Users/devanshu.bhatnagar/Documents/video-automation/backend/temp'
+// Use OS temp directory (works on any system including Render)
+const TEMP_DIR = path.join(os.tmpdir(), 'video-automation')
 
 function ensureTempDir() {
   if (!fs.existsSync(TEMP_DIR)) {
@@ -17,7 +22,8 @@ function ensureTempDir() {
 
 export interface ShortsVideoResult {
   success: boolean
-  videoPath?: string
+  videoPath?: string // Local temp path for FFmpeg/upload
+  videoFileId?: string // GridFS file ID
   error?: string
   duration?: number
 }
@@ -542,16 +548,37 @@ export function deleteVideoFile(videoPath: string): void {
 
 /**
  * Delete all temp files for a job including video
+ * Also deletes GridFS files if fileId is provided
  */
-export function cleanupAllJobFiles(jobId: string, videoPath?: string): void {
+export async function cleanupAllJobFiles(jobId: string, videoFileId?: string): Promise<void> {
   try {
-    // Delete video file if provided
-    if (videoPath && fs.existsSync(videoPath)) {
-      deleteVideoFile(videoPath)
-    }
-    
     // Clean up other temp files
     cleanupJobFiles(jobId)
+    
+    // Delete video from GridFS if fileId provided
+    if (videoFileId) {
+      try {
+        await deleteFromGridFS(videoFileId)
+        console.log(`✅ Deleted video from GridFS: ${videoFileId}`)
+        
+        // Also delete MediaFile record
+        await connectDB()
+        await MediaFile.deleteOne({ fileId: videoFileId })
+      } catch (error) {
+        console.error('GridFS delete error:', error)
+      }
+    }
+    
+    // Also cleanup local video file if exists
+    const videoPath = path.join(TEMP_DIR, `shorts_${jobId}.mp4`)
+    if (fs.existsSync(videoPath)) {
+      try {
+        fs.unlinkSync(videoPath)
+        console.log(`✅ Deleted local video file: ${videoPath}`)
+      } catch (error) {
+        console.error('Local file delete error:', error)
+      }
+    }
     
     console.log(`✅ Cleaned up all temp files for job: ${jobId.slice(0, 8)}`)
   } catch (error) {
@@ -572,6 +599,7 @@ export async function generateShortsVideo(
   imagePrompt: string,
   voiceoverText: string,
   jobId: string,
+  userId: string,
   onProgress?: (msg: string) => void,
   options: VideoOptions = {}
 ): Promise<ShortsVideoResult> {
@@ -633,10 +661,60 @@ export async function generateShortsVideo(
     // Get final video duration
     const duration = getAudioDuration(videoPath)
 
-    // Cleanup temp files (keep video)
-    cleanupJobFiles(jobId)
+    // Upload video to GridFS
+    log('☁️ Uploading video to MongoDB GridFS...')
+    try {
+      await connectDB()
+      const videoBuffer = fs.readFileSync(videoPath)
+      const videoFileId = await uploadToGridFS(
+        videoBuffer,
+        `shorts_${jobId}.mp4`,
+        {
+          jobId,
+          userId,
+          type: 'video',
+          duration,
+        }
+      )
 
-    log(`✅ Video generated! Duration: ${duration.toFixed(1)}s`)
+      // Save file reference to MongoDB
+      await MediaFile.create({
+        fileId: videoFileId,
+        filename: `shorts_${jobId}.mp4`,
+        type: 'video',
+        jobId,
+        userId: new mongoose.Types.ObjectId(userId),
+        size: videoBuffer.length,
+        mimeType: 'video/mp4',
+      })
+
+      log(`✅ Video uploaded to GridFS! File ID: ${videoFileId}`)
+
+      // Cleanup temp files (including video)
+      cleanupJobFiles(jobId)
+      // Also delete the video file from temp
+      if (fs.existsSync(videoPath)) {
+        fs.unlinkSync(videoPath)
+      }
+
+      return {
+        success: true,
+        videoPath, // Keep for backward compatibility (will be deleted)
+        videoFileId, // GridFS file ID
+        duration,
+      }
+    } catch (uploadError: unknown) {
+      const err = uploadError as { message?: string }
+      console.error('GridFS upload error:', err)
+      log(`⚠️ Failed to upload to GridFS: ${err.message || 'Unknown error'}`)
+      
+      // Return success with local path if upload fails (fallback)
+      return {
+        success: true,
+        videoPath,
+        duration,
+      }
+    }
     
     return {
       success: true,

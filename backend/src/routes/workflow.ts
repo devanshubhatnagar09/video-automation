@@ -265,6 +265,7 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
       content.imagePrompt,
       content.script,
       jobId,
+      userId,
       (msg) => {
         addLog(jobId, { type: 'info', step: 'video', message: msg })
       },
@@ -276,14 +277,16 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
 
     let videoPath: string | null = null
     
-    if (videoResult.success && videoResult.videoPath) {
-      videoPath = videoResult.videoPath
+    if (videoResult.success && (videoResult.videoPath || videoResult.videoFileId)) {
+      videoPath = videoResult.videoPath || null
       addLog(jobId, { 
         type: 'output', 
         step: 'video', 
         message: `✅ Video created! Duration: ${videoResult.duration?.toFixed(1)}s`,
         data: { 
           videoPath: videoResult.videoPath,
+          videoFileId: videoResult.videoFileId,
+          storage: videoResult.videoFileId ? 'GridFS' : 'Local',
           duration: videoResult.duration
         }
       })
@@ -298,7 +301,12 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
       throw new Error(`Video generation failed: ${videoResult.error}`)
     }
 
-    job.data = { ...job.data, videoPath, duration: videoResult.duration }
+    job.data = { 
+      ...job.data, 
+      videoPath, 
+      videoFileId: videoResult.videoFileId,
+      duration: videoResult.duration 
+    }
 
     // ============ STEP 3: YouTube Upload ============
     job.step = 'upload'
@@ -312,7 +320,10 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
     let youtubeUrl: string
     let uploadSuccess = false
 
-    if (videoPath) {
+    // Use GridFS file ID if available, otherwise use local path
+    const videoFileIdOrPath = videoResult.videoFileId || videoPath
+
+    if (videoFileIdOrPath) {
       try {
         const description = `${content.hook}
 
@@ -330,13 +341,13 @@ ${content.tags.join(' ')}`
             title: content.title,
             description,
             tags: content.tags,
-            videoPath
+            source: videoResult.videoFileId ? 'GridFS' : 'Local file'
           }
         })
 
         const uploadResult = await uploadToYouTube(
           userId,
-          videoPath,
+          videoFileIdOrPath,
           content.title,
           description,
           content.tags.map((t: string) => t.replace('#', ''))
@@ -355,20 +366,18 @@ ${content.tags.join(' ')}`
           }
         })
         
-        // Delete video file after successful upload
-        if (videoPath) {
-          try {
-            cleanupAllJobFiles(jobId, videoPath)
-            addLog(jobId, { 
-              type: 'info', 
-              step: 'upload', 
-              message: '🗑️ Cleaned up temp video file'
-            })
-          } catch (cleanupError) {
-            const err = cleanupError as Error
-            console.error('Cleanup error:', err.message)
-            // Don't fail the workflow if cleanup fails
-          }
+        // Cleanup after successful upload
+        try {
+          await cleanupAllJobFiles(jobId, videoResult.videoFileId)
+          addLog(jobId, { 
+            type: 'info', 
+            step: 'upload', 
+            message: '🗑️ Cleaned up temp files and GridFS video'
+          })
+        } catch (cleanupError) {
+          const err = cleanupError as Error
+          console.error('Cleanup error:', err.message)
+          // Don't fail the workflow if cleanup fails
         }
       } catch (uploadError: unknown) {
         const err = uploadError as Error
