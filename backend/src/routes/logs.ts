@@ -5,10 +5,25 @@ import { User } from '../models/User.js'
 import mongoose from 'mongoose'
 
 // Type for lean job document (without Document methods)
-type LeanJob = Omit<IJob, keyof mongoose.Document> & {
+type LeanJob = {
   _id: mongoose.Types.ObjectId
+  jobId: string
+  userId: mongoose.Types.ObjectId
+  status: 'running' | 'completed' | 'error'
+  step: string
+  message?: string
+  data?: Record<string, unknown>
+  error?: string
+  logs: Array<{
+    type: string
+    step: string
+    message: string
+    data?: unknown
+    timestamp: string
+  }>
   createdAt: Date
   updatedAt: Date
+  __v?: number
 }
 
 export const logsRouter = Router()
@@ -42,10 +57,10 @@ logsRouter.get('/logs', async (req: Request, res: Response) => {
     }
 
     // Get all jobs for this user filtered by userId
-    const recentJobs = await Job.find({ userId: user._id })
+    const recentJobs = (await Job.find({ userId: user._id })
       .sort({ createdAt: -1 })
       .limit(100)
-      .lean() as LeanJob[]
+      .lean()) as unknown as LeanJob[]
 
     // Extract all logs from jobs
     const allLogs: Array<{
@@ -123,7 +138,7 @@ logsRouter.get('/logs/job/:jobId', async (req: Request, res: Response) => {
     }
 
     // Get job logs (only if it belongs to this user)
-    const job = await Job.findOne({ jobId, userId: user._id }).lean() as LeanJob | null
+    const job = (await Job.findOne({ jobId, userId: user._id }).lean()) as unknown as LeanJob | null
 
     if (!job) {
       return res.status(404).json({ error: 'Job not found or access denied' })
