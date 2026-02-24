@@ -5,6 +5,7 @@ import { authRouter } from './routes/auth.js'
 import { geminiRouter } from './routes/gemini.js'
 import { youtubeRouter } from './routes/youtube.js'
 import { workflowRouter } from './routes/workflow.js'
+import { workflowUploadRouter } from './routes/workflow-upload.js'
 import { cronRouter } from './routes/cron.js'
 import { historyRouter } from './routes/history.js'
 import { logsRouter } from './routes/logs.js'
@@ -55,6 +56,7 @@ app.use('/api/auth', authRouter)
 app.use('/api/gemini', geminiRouter)
 app.use('/api/youtube', youtubeRouter)
 app.use('/api/workflow', workflowRouter)
+app.use('/api/workflow', workflowUploadRouter) // Manual image upload routes
 app.use('/api/cron', cronRouter)
 app.use('/api/history', historyRouter)
 app.use('/', logsRouter) // User logs endpoint at root level

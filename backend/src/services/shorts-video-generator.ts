@@ -25,7 +25,80 @@ export interface ShortsVideoResult {
   videoPath?: string // Local temp path for FFmpeg/upload
   videoFileId?: string // GridFS file ID
   error?: string
+  errorMessage?: string // Detailed error message
   duration?: number
+  requiresManualImage?: boolean // Flag to indicate manual image upload needed
+}
+
+/**
+ * Download random 9:16 image from Picsum.photos (fallback)
+ */
+async function downloadPicsumImage(jobId: string): Promise<string | null> {
+  try {
+    ensureTempDir()
+    
+    // 9:16 aspect ratio for Shorts (1080x1920)
+    const width = 1080
+    const height = 1920
+    const seed = Math.floor(Math.random() * 1000000)
+    const imageUrl = `https://picsum.photos/${width}/${height}?random=${seed}`
+    
+    console.log(`🖼️ Downloading random image from Picsum.photos...`)
+    console.log(`🔗 URL: ${imageUrl}`)
+    
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => {
+      controller.abort()
+      console.error('⏱️ Picsum image download timeout after 30 seconds')
+    }, 30000) // 30s timeout
+    
+    let response: Response
+    try {
+      response = await fetch(imageUrl, { 
+        signal: controller.signal,
+        headers: { 
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'image/jpeg,image/png,image/webp,*/*'
+        }
+      })
+      clearTimeout(timeoutId)
+    } catch (fetchError) {
+      clearTimeout(timeoutId)
+      const err = fetchError as Error
+      if (err.name === 'AbortError') {
+        console.error('⏱️ Request timeout')
+        return null
+      }
+      console.error(`❌ Fetch error: ${err.message}`)
+      return null
+    }
+    
+    if (!response.ok) {
+      console.error(`❌ HTTP ${response.status}: ${response.statusText}`)
+      return null
+    }
+    
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.startsWith('image/')) {
+      console.error(`❌ Invalid content type: ${contentType}`)
+      return null
+    }
+    
+    const arrayBuffer = await response.arrayBuffer()
+    const buffer = Buffer.from(arrayBuffer)
+    
+    // Save image
+    const ext = contentType.includes('png') ? '.png' : contentType.includes('webp') ? '.webp' : '.jpg'
+    const imagePath = path.join(TEMP_DIR, `picsum_${jobId}${ext}`)
+    fs.writeFileSync(imagePath, buffer)
+    
+    console.log(`✅ Picsum image downloaded: ${imagePath} (${(buffer.length / 1024).toFixed(1)}KB)`)
+    return imagePath
+  } catch (error) {
+    const err = error as Error
+    console.error(`❌ Picsum image download failed:`, err.message)
+    return null
+  }
 }
 
 /**
@@ -680,7 +753,8 @@ export async function generateShortsVideo(
   jobId: string,
   userId: string,
   onProgress?: (msg: string) => void,
-  options: VideoOptions = {}
+  options: VideoOptions = {},
+  manualImagePath?: string // Optional: path to manually uploaded image
 ): Promise<ShortsVideoResult> {
   const log = (msg: string) => {
     console.log(msg)
@@ -697,42 +771,67 @@ export async function generateShortsVideo(
     log('📐 Format: 9:16 vertical (1080x1920)')
     log(`🗣️ Voice: ${voice} | 🌐 Language: ${language}`)
 
-    // Step 1: Generate background image
-    log('📸 Step 1: Generating background image...')
-    log(`📝 Image prompt: ${imagePrompt.slice(0, 100)}...`)
+    // Step 1: Generate background image or use manual upload
+    let imagePath: string | null = null
     
-    let imagePath = await generateVerticalImage(imagePrompt, jobId)
-    
-    if (!imagePath) {
-      log('❌ Image generation failed - trying multiple fallbacks...')
+    if (manualImagePath && fs.existsSync(manualImagePath)) {
+      log('📸 Using manually uploaded image...')
+      // Copy manual image to temp directory
+      imagePath = path.join(TEMP_DIR, `shorts_bg_${jobId}.jpg`)
+      fs.copyFileSync(manualImagePath, imagePath)
+      log('✅ Manual image loaded successfully')
+    } else {
+      log('📸 Step 1: Generating background image...')
+      log(`📝 Image prompt: ${imagePrompt.slice(0, 100)}...`)
       
-      // Try fallback 1: Simple prompt
-      const fallbackPrompts = [
-        'beautiful abstract background, vertical, colorful, high quality',
-        'gradient background, vertical, modern, vibrant colors',
-        'minimalist background, vertical, clean, professional'
-      ]
-      
-      for (let i = 0; i < fallbackPrompts.length; i++) {
-        log(`🔄 Fallback attempt ${i + 1}/${fallbackPrompts.length}...`)
-        const fallbackImagePath = await generateVerticalImage(fallbackPrompts[i], `${jobId}_fallback${i}`)
-        
-        if (fallbackImagePath) {
-          log(`✅ Fallback ${i + 1} succeeded`)
-          imagePath = path.join(TEMP_DIR, `shorts_bg_${jobId}.jpg`)
-          fs.copyFileSync(fallbackImagePath, imagePath)
-          if (fs.existsSync(fallbackImagePath)) {
-            fs.unlinkSync(fallbackImagePath)
-          }
-          break
-        }
-      }
+      imagePath = await generateVerticalImage(imagePrompt, jobId)
       
       if (!imagePath) {
-        log('❌ All fallback attempts failed')
-        return {
-          success: false,
-          error: 'Failed to generate background image after multiple attempts. Pollinations.ai may be unavailable or rate-limited. Please try again in a few minutes.'
+        log('❌ Image generation failed - trying multiple fallbacks...')
+        
+        // Try fallback 1: Simple prompt
+        const fallbackPrompts = [
+          'beautiful abstract background, vertical, colorful, high quality',
+          'gradient background, vertical, modern, vibrant colors',
+          'minimalist background, vertical, clean, professional'
+        ]
+        
+        for (let i = 0; i < fallbackPrompts.length; i++) {
+          log(`🔄 Fallback attempt ${i + 1}/${fallbackPrompts.length}...`)
+          const fallbackImagePath = await generateVerticalImage(fallbackPrompts[i], `${jobId}_fallback${i}`)
+          
+          if (fallbackImagePath) {
+            log(`✅ Fallback ${i + 1} succeeded`)
+            imagePath = path.join(TEMP_DIR, `shorts_bg_${jobId}.jpg`)
+            fs.copyFileSync(fallbackImagePath, imagePath)
+            if (fs.existsSync(fallbackImagePath)) {
+              fs.unlinkSync(fallbackImagePath)
+            }
+            break
+          }
+        }
+        
+        if (!imagePath) {
+          log('❌ All fallback attempts failed - trying Picsum.photos...')
+          
+          // Try Picsum.photos as final fallback before manual upload
+          const picsumImagePath = await downloadPicsumImage(jobId)
+          
+          if (picsumImagePath) {
+            log('✅ Picsum.photos fallback succeeded')
+            imagePath = path.join(TEMP_DIR, `shorts_bg_${jobId}.jpg`)
+            fs.copyFileSync(picsumImagePath, imagePath)
+            if (fs.existsSync(picsumImagePath)) {
+              fs.unlinkSync(picsumImagePath)
+            }
+          } else {
+            log('❌ Picsum.photos also failed')
+            return {
+              success: false,
+              error: 'IMAGE_GENERATION_FAILED', // Special error code for manual upload option
+              errorMessage: 'Failed to generate background image after multiple attempts (Pollinations.ai and Picsum.photos). Please upload an image manually.'
+            }
+          }
         }
       }
     }

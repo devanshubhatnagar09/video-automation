@@ -301,7 +301,13 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
     })
 
     job.message = `Content: ${content.title}`
-    job.data = { content }
+    job.data = { 
+      content,
+      videoSettings: {
+        voice: videoSettings.voice,
+        language: videoSettings.language
+      }
+    }
     await updateJobStatus(jobId, userId, { step: job.step, message: job.message, data: job.data })
 
     // ============ STEP 2: Generate Video (Image + Audio + Subtitles) ============
@@ -355,6 +361,38 @@ Provide your response in this EXACT JSON format (no markdown, just JSON):
         }
       })
       job.message = `Video created (${videoResult.duration?.toFixed(1)}s)`
+    } else if (videoResult.error === 'IMAGE_GENERATION_FAILED') {
+      // Image generation failed - allow manual upload
+      addLog(jobId, userId, { 
+        type: 'error', 
+        step: 'video', 
+        message: `⚠️ Image generation failed. Please upload an image manually.`,
+        data: {
+          error: videoResult.error,
+          errorMessage: videoResult.errorMessage,
+          requiresManualImage: true,
+          uploadEndpoint: `/api/workflow/upload-image/${jobId}`
+        }
+      })
+      job.status = 'error'
+      job.step = 'video'
+      job.message = 'Image generation failed. Please upload an image manually.'
+      job.error = videoResult.errorMessage || 'Image generation failed'
+      job.data = {
+        ...job.data,
+        requiresManualImage: true,
+        uploadEndpoint: `/api/workflow/upload-image/${jobId}`
+      }
+      await updateJobStatus(jobId, userId, {
+        status: job.status,
+        step: job.step,
+        message: job.message,
+        error: job.error,
+        data: job.data
+      })
+      // Don't throw error, allow user to upload manually
+      // The workflow will stop here and wait for manual image upload
+      return
     } else {
       addLog(jobId, userId, { 
         type: 'error', 
