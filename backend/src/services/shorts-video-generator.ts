@@ -335,7 +335,177 @@ async function generateNaturalAudio(
     
     let audioGenerated = false
     
-    // Method 1: Try edge-tts via Python shell command (works for both languages)
+    // Method 1: Try HTTP-based TTS (Google Translate TTS - PRIMARY METHOD for Render)
+    // This works on all platforms including Render/Linux - most reliable
+    if (!audioGenerated) {
+      try {
+        console.log('📢 Trying HTTP-based TTS (Google Translate - works on Render)...')
+        const ttsLang = language === 'hindi' ? 'hi' : 'en'
+        
+        // Google Translate TTS has ~200 char limit, so split long text
+        const maxChunkLength = 150 // Reduced for better reliability
+        const textChunks: string[] = []
+        
+        if (cleanText.length <= maxChunkLength) {
+          textChunks.push(cleanText)
+        } else {
+          // Split by sentences first, then by words
+          const sentences = cleanText.match(/[^.!?]+[.!?]+/g) || [cleanText]
+          let currentChunk = ''
+          
+          for (const sentence of sentences) {
+            if ((currentChunk + sentence).length <= maxChunkLength) {
+              currentChunk += sentence
+            } else {
+              if (currentChunk) textChunks.push(currentChunk.trim())
+              // If single sentence is too long, split by words
+              if (sentence.length > maxChunkLength) {
+                const words = sentence.split(' ')
+                let wordChunk = ''
+                for (const word of words) {
+                  if ((wordChunk + ' ' + word).length <= maxChunkLength) {
+                    wordChunk += (wordChunk ? ' ' : '') + word
+                  } else {
+                    if (wordChunk) textChunks.push(wordChunk.trim())
+                    wordChunk = word
+                  }
+                }
+                if (wordChunk) currentChunk = wordChunk
+              } else {
+                currentChunk = sentence
+              }
+            }
+          }
+          if (currentChunk) textChunks.push(currentChunk.trim())
+        }
+        
+        console.log(`   Splitting text into ${textChunks.length} chunks for TTS...`)
+        
+        const audioChunks: Buffer[] = []
+        let failedChunks = 0
+        const maxFailures = Math.ceil(textChunks.length * 0.3) // Allow 30% failures
+        
+        for (let i = 0; i < textChunks.length; i++) {
+          const chunk = textChunks[i]
+          if (!chunk.trim()) continue
+          
+          try {
+            const encodedText = encodeURIComponent(chunk)
+            // Use different Google TTS endpoints for better reliability
+            const endpoints = [
+              `https://translate.google.com/translate_tts?ie=UTF-8&tl=${ttsLang}&client=tw-ob&q=${encodedText}`,
+              `https://translate.google.com/translate_tts?ie=UTF-8&tl=${ttsLang}&client=gtx&q=${encodedText}`,
+              `https://translate.google.com/translate_tts?ie=UTF-8&tl=${ttsLang}&q=${encodedText}`
+            ]
+            
+            let chunkSuccess = false
+            for (let endpointIdx = 0; endpointIdx < endpoints.length && !chunkSuccess; endpointIdx++) {
+              try {
+                console.log(`   Fetching chunk ${i + 1}/${textChunks.length} (${chunk.length} chars) [endpoint ${endpointIdx + 1}]...`)
+                
+                const controller = new AbortController()
+                const timeoutId = setTimeout(() => controller.abort(), 20000) // 20s timeout per chunk
+                
+                const response = await fetch(endpoints[endpointIdx], {
+                  headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'audio/mpeg, audio/*',
+                    'Referer': 'https://translate.google.com/',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                  },
+                  signal: controller.signal,
+                  redirect: 'follow'
+                })
+                
+                clearTimeout(timeoutId)
+                
+                if (response.ok && response.headers.get('content-type')?.includes('audio')) {
+                  const audioBuffer = await response.arrayBuffer()
+                  const buffer = Buffer.from(audioBuffer)
+                  if (buffer.length > 500) { // Minimum size check
+                    audioChunks.push(buffer)
+                    console.log(`   ✅ Chunk ${i + 1} received: ${buffer.length} bytes`)
+                    chunkSuccess = true
+                  } else {
+                    console.log(`   ⚠️ Chunk ${i + 1} too small: ${buffer.length} bytes`)
+                  }
+                } else {
+                  console.log(`   ⚠️ Chunk ${i + 1} endpoint ${endpointIdx + 1} failed: ${response.status}`)
+                }
+              } catch (endpointError) {
+                const err = endpointError as Error
+                if (err.name !== 'AbortError') {
+                  console.log(`   ⚠️ Chunk ${i + 1} endpoint ${endpointIdx + 1} error: ${err.message}`)
+                }
+              }
+            }
+            
+            if (!chunkSuccess) {
+              failedChunks++
+              console.log(`   ❌ Chunk ${i + 1} failed on all endpoints`)
+              if (failedChunks > maxFailures) {
+                console.log(`   ❌ Too many chunk failures (${failedChunks}/${textChunks.length}), stopping`)
+                break
+              }
+            }
+            
+            // Progressive delay between requests to avoid rate limiting
+            // Longer delays for production stability on Render
+            if (i < textChunks.length - 1) {
+              const delay = Math.min(2000 + (i * 400), 5000) // 2s to 5s delay (production-safe)
+              console.log(`   Waiting ${delay}ms before next chunk...`)
+              await new Promise(resolve => setTimeout(resolve, delay))
+            }
+          } catch (chunkError) {
+            const err = chunkError as Error
+            failedChunks++
+            console.log(`   ❌ Chunk ${i + 1} error: ${err.message}`)
+            if (failedChunks > maxFailures) {
+              console.log(`   ❌ Too many chunk failures (${failedChunks}/${textChunks.length}), stopping`)
+              break
+            }
+          }
+        }
+        
+        // Need at least 50% of chunks to succeed (or at least 1 chunk)
+        const minRequiredChunks = Math.max(1, Math.ceil(textChunks.length * 0.5))
+        const receivedChunks = audioChunks.length
+        if (receivedChunks >= minRequiredChunks) {
+          try {
+            // Combine all audio chunks efficiently
+            console.log(`   Combining ${receivedChunks} audio chunks...`)
+            const combinedBuffer = Buffer.concat(audioChunks)
+            
+            // Clear chunks array to free memory immediately
+            audioChunks.length = 0
+            
+            if (combinedBuffer.length > 1000) {
+              fs.writeFileSync(mp3Path, combinedBuffer)
+              console.log(`✅ HTTP-based TTS succeeded! Combined audio size: ${combinedBuffer.length} bytes (${receivedChunks}/${textChunks.length} chunks)`)
+              audioGenerated = true
+            } else {
+              console.log(`⚠️ Combined audio too small: ${combinedBuffer.length} bytes`)
+            }
+          } catch (combineError) {
+            const err = combineError as Error
+            console.log(`❌ Failed to combine audio chunks: ${err.message}`)
+          }
+        } else {
+          console.log(`❌ Not enough audio chunks received: ${receivedChunks}/${textChunks.length} (need ${minRequiredChunks})`)
+          // Clear chunks to free memory
+          audioChunks.length = 0
+        }
+      } catch (httpTtsError) {
+        const err = httpTtsError as Error
+        console.log(`❌ HTTP-based TTS failed: ${err.message}`)
+        if (err.stack) {
+          console.log(`   Stack: ${err.stack.split('\n').slice(0, 3).join('\n')}`)
+        }
+      }
+    }
+    
+    // Method 2: Try edge-tts via Python shell command (works for both languages)
+    // Usually fails on Render, but try anyway
     if (!audioGenerated) {
       try {
         console.log('📢 Trying edge-tts Python command...')
@@ -381,119 +551,10 @@ async function generateNaturalAudio(
       }
     }
     
-    // Method 2: Try HTTP-based TTS (Google Translate TTS - free, no API key needed)
-    // This works on all platforms including Render/Linux
-    if (!audioGenerated) {
-      try {
-        console.log('📢 Trying HTTP-based TTS (Google Translate - works on Render)...')
-        const ttsLang = language === 'hindi' ? 'hi' : 'en'
-        
-        // Google Translate TTS has ~200 char limit, so split long text
-        const maxChunkLength = 180
-        const textChunks: string[] = []
-        
-        if (cleanText.length <= maxChunkLength) {
-          textChunks.push(cleanText)
-        } else {
-          // Split by sentences first, then by words
-          const sentences = cleanText.match(/[^.!?]+[.!?]+/g) || [cleanText]
-          let currentChunk = ''
-          
-          for (const sentence of sentences) {
-            if ((currentChunk + sentence).length <= maxChunkLength) {
-              currentChunk += sentence
-            } else {
-              if (currentChunk) textChunks.push(currentChunk.trim())
-              // If single sentence is too long, split by words
-              if (sentence.length > maxChunkLength) {
-                const words = sentence.split(' ')
-                let wordChunk = ''
-                for (const word of words) {
-                  if ((wordChunk + ' ' + word).length <= maxChunkLength) {
-                    wordChunk += (wordChunk ? ' ' : '') + word
-                  } else {
-                    if (wordChunk) textChunks.push(wordChunk.trim())
-                    wordChunk = word
-                  }
-                }
-                if (wordChunk) currentChunk = wordChunk
-              } else {
-                currentChunk = sentence
-              }
-            }
-          }
-          if (currentChunk) textChunks.push(currentChunk.trim())
-        }
-        
-        console.log(`   Splitting text into ${textChunks.length} chunks for TTS...`)
-        
-        const audioChunks: Buffer[] = []
-        for (let i = 0; i < textChunks.length; i++) {
-          const chunk = textChunks[i]
-          if (!chunk.trim()) continue
-          
-          try {
-            const encodedText = encodeURIComponent(chunk)
-            const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${ttsLang}&client=tw-ob&q=${encodedText}`
-            
-            console.log(`   Fetching chunk ${i + 1}/${textChunks.length} (${chunk.length} chars)...`)
-            const response = await fetch(ttsUrl, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://translate.google.com/'
-              },
-              signal: AbortSignal.timeout(30000)
-            })
-            
-            if (response.ok) {
-              const audioBuffer = await response.arrayBuffer()
-              const buffer = Buffer.from(audioBuffer)
-              if (buffer.length > 100) {
-                audioChunks.push(buffer)
-                console.log(`   ✅ Chunk ${i + 1} received: ${buffer.length} bytes`)
-              } else {
-                console.log(`   ⚠️ Chunk ${i + 1} too small: ${buffer.length} bytes`)
-              }
-            } else {
-              console.log(`   ⚠️ Chunk ${i + 1} failed: ${response.status}`)
-            }
-            
-            // Small delay between requests to avoid rate limiting
-            if (i < textChunks.length - 1) {
-              await new Promise(resolve => setTimeout(resolve, 500))
-            }
-          } catch (chunkError) {
-            const err = chunkError as Error
-            console.log(`   ❌ Chunk ${i + 1} error: ${err.message}`)
-          }
-        }
-        
-        if (audioChunks.length > 0) {
-          // Combine all audio chunks
-          const combinedBuffer = Buffer.concat(audioChunks)
-          if (combinedBuffer.length > 1000) {
-            fs.writeFileSync(mp3Path, combinedBuffer)
-            console.log(`✅ HTTP-based TTS succeeded! Combined audio size: ${combinedBuffer.length} bytes (${audioChunks.length} chunks)`)
-            audioGenerated = true
-          } else {
-            console.log(`⚠️ Combined audio too small: ${combinedBuffer.length} bytes`)
-          }
-        } else {
-          console.log('❌ No audio chunks received')
-        }
-      } catch (httpTtsError) {
-        const err = httpTtsError as Error
-        console.log(`❌ HTTP-based TTS failed: ${err.message}`)
-        if (err.stack) {
-          console.log(`   Stack: ${err.stack.split('\n').slice(0, 3).join('\n')}`)
-        }
-      }
-    }
-    
     // Method 3: Try edge-tts-node npm package (works on all platforms)
     if (!audioGenerated) {
       try {
-        console.log('📢 Trying edge-tts-node npm package (PRIMARY METHOD)...')
+        console.log('📢 Trying edge-tts-node npm package...')
         const edgeTTSModule = await import('edge-tts-node').catch((err) => {
           console.log(`❌ edge-tts-node import error: ${(err as Error).message}`)
           return null
@@ -754,8 +815,8 @@ async function generateNaturalAudio(
     
     // If we got here, all methods failed
     const errorMsg = language === 'hindi' 
-      ? 'All audio generation methods failed for Hindi. Tried: Python edge-tts, HTTP-based TTS (Google), edge-tts-node npm package, macOS say fallback.'
-      : 'All audio generation methods failed. Tried: Python edge-tts, HTTP-based TTS (Google), edge-tts-node npm package, macOS say.'
+      ? 'All audio generation methods failed for Hindi. Tried: HTTP-based TTS (Google), Python edge-tts, edge-tts-node npm package, macOS say fallback.'
+      : 'All audio generation methods failed. Tried: HTTP-based TTS (Google), Python edge-tts, edge-tts-node npm package, macOS say.'
     throw new Error(errorMsg)
   } catch (error) {
     const err = error as Error
