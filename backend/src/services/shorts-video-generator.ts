@@ -335,8 +335,81 @@ async function generateNaturalAudio(
       }
     }
     
-    // Method 2: For English - use macOS say (very natural Samantha voice)
-    if (!audioGenerated && language === 'english') {
+    // Method 2: Try edge-tts-node npm package (works on all platforms)
+    if (!audioGenerated) {
+      try {
+        console.log('📢 Trying edge-tts-node npm package...')
+        const edgeTTSModule = await import('edge-tts-node').catch(() => null)
+        
+        if (edgeTTSModule) {
+          const edgeVoice = VOICE_MAP[voice] || (language === 'hindi' ? 'hi-IN-SwaraNeural' : 'en-US-JennyNeural')
+          
+          try {
+            // Use edge-tts-node MsEdgeTTS class
+            const { MsEdgeTTS, OUTPUT_FORMAT } = edgeTTSModule
+            const tts = new MsEdgeTTS({ enableLogger: false })
+            
+            // Set metadata with voice and format
+            await tts.setMetadata(edgeVoice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3)
+            
+            // Generate audio to file (temporary webm, then convert to mp3)
+            const tempWebmPath = path.join(TEMP_DIR, `shorts_audio_temp_${jobId}.webm`)
+            await tts.toFile(tempWebmPath, cleanText)
+            
+            // Check if file was created
+            if (fs.existsSync(tempWebmPath)) {
+              const stats = fs.statSync(tempWebmPath)
+              if (stats.size > 1000) {
+                // Convert webm to mp3 using ffmpeg if available
+                if (ffmpegPath) {
+                  try {
+                    execSync(`"${ffmpegPath}" -y -i "${tempWebmPath}" -ar 44100 -ac 1 -b:a 192k "${mp3Path}"`, {
+                      timeout: 30000,
+                      stdio: 'pipe'
+                    })
+                    
+                    if (fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 1000) {
+                      console.log(`✅ edge-tts-node succeeded! Audio size: ${fs.statSync(mp3Path).size} bytes`)
+                      audioGenerated = true
+                    }
+                  } catch (convertError) {
+                    console.log(`⚠️ FFmpeg conversion failed, using webm directly: ${(convertError as Error).message}`)
+                    // Use webm directly - FFmpeg can handle webm in video creation
+                    fs.copyFileSync(tempWebmPath, mp3Path.replace('.mp3', '.webm'))
+                    const webmPath = mp3Path.replace('.mp3', '.webm')
+                    // Update mp3Path to webmPath for later processing
+                    fs.copyFileSync(webmPath, mp3Path)
+                    if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
+                    console.log('✅ edge-tts-node succeeded (webm format)!')
+                    audioGenerated = true
+                  }
+                } else {
+                  // No ffmpeg, use webm directly
+                  fs.copyFileSync(tempWebmPath, mp3Path.replace('.mp3', '.webm'))
+                  const webmPath = mp3Path.replace('.mp3', '.webm')
+                  fs.copyFileSync(webmPath, mp3Path)
+                  if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
+                  console.log('✅ edge-tts-node succeeded (webm format, no conversion)!')
+                  audioGenerated = true
+                }
+                
+                // Cleanup temp webm file
+                if (fs.existsSync(tempWebmPath)) fs.unlinkSync(tempWebmPath)
+              }
+            }
+          } catch (edgeError) {
+            const err = edgeError as Error
+            console.log(`❌ edge-tts-node generation failed: ${err.message}`)
+          }
+        }
+      } catch (importError) {
+        const err = importError as Error
+        console.log('❌ edge-tts-node import failed:', err.message)
+      }
+    }
+    
+    // Method 3: For English - use macOS say (very natural Samantha voice) - only on macOS
+    if (!audioGenerated && language === 'english' && process.platform === 'darwin') {
       try {
         console.log('📢 Trying macOS say...')
         const aiffPath = path.join(TEMP_DIR, `shorts_audio_${jobId}.aiff`)
@@ -366,8 +439,8 @@ async function generateNaturalAudio(
       }
     }
     
-    // Method 3: Final fallback - use macOS say with any available voice for Hindi
-    if (!audioGenerated && language === 'hindi') {
+    // Method 4: Final fallback - use macOS say with any available voice for Hindi (only on macOS)
+    if (!audioGenerated && language === 'hindi' && process.platform === 'darwin') {
       try {
         console.log('📢 Fallback: Using macOS say for Hindi (limited)...')
         const aiffPath = path.join(TEMP_DIR, `shorts_audio_${jobId}.aiff`)
@@ -433,8 +506,8 @@ async function generateNaturalAudio(
     
     // If we got here, all methods failed
     const errorMsg = language === 'hindi' 
-      ? 'All audio generation methods failed for Hindi. Tried: Python edge-tts, macOS say fallback.'
-      : 'All audio generation methods failed. Tried: Python edge-tts, macOS say.'
+      ? 'All audio generation methods failed for Hindi. Tried: Python edge-tts, edge-tts-node npm package, macOS say fallback.'
+      : 'All audio generation methods failed. Tried: Python edge-tts, edge-tts-node npm package, macOS say.'
     throw new Error(errorMsg)
   } catch (error) {
     const err = error as Error
@@ -843,7 +916,10 @@ export async function generateShortsVideo(
     if (!audioPath) {
       return {
         success: false,
-        error: 'Failed to generate audio. Make sure Python edge-tts is installed for Hindi support.'
+        error: 'AUDIO_GENERATION_FAILED',
+        errorMessage: language === 'hindi' 
+          ? 'Failed to generate audio. Tried: Python edge-tts, edge-tts-node npm package, macOS say fallback.'
+          : 'Failed to generate audio. Tried: Python edge-tts, edge-tts-node npm package, macOS say.'
       }
     }
 
