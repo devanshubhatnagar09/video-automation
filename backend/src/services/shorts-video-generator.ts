@@ -338,7 +338,116 @@ async function generateNaturalAudio(
       }
     }
     
-    // Method 2: Try edge-tts-node npm package (works on all platforms) - PRIMARY METHOD
+    // Method 2: Try HTTP-based TTS (Google Translate TTS - free, no API key needed)
+    // This works on all platforms including Render/Linux
+    if (!audioGenerated) {
+      try {
+        console.log('📢 Trying HTTP-based TTS (Google Translate - works on Render)...')
+        const ttsLang = language === 'hindi' ? 'hi' : 'en'
+        
+        // Google Translate TTS has ~200 char limit, so split long text
+        const maxChunkLength = 180
+        const textChunks: string[] = []
+        
+        if (cleanText.length <= maxChunkLength) {
+          textChunks.push(cleanText)
+        } else {
+          // Split by sentences first, then by words
+          const sentences = cleanText.match(/[^.!?]+[.!?]+/g) || [cleanText]
+          let currentChunk = ''
+          
+          for (const sentence of sentences) {
+            if ((currentChunk + sentence).length <= maxChunkLength) {
+              currentChunk += sentence
+            } else {
+              if (currentChunk) textChunks.push(currentChunk.trim())
+              // If single sentence is too long, split by words
+              if (sentence.length > maxChunkLength) {
+                const words = sentence.split(' ')
+                let wordChunk = ''
+                for (const word of words) {
+                  if ((wordChunk + ' ' + word).length <= maxChunkLength) {
+                    wordChunk += (wordChunk ? ' ' : '') + word
+                  } else {
+                    if (wordChunk) textChunks.push(wordChunk.trim())
+                    wordChunk = word
+                  }
+                }
+                if (wordChunk) currentChunk = wordChunk
+              } else {
+                currentChunk = sentence
+              }
+            }
+          }
+          if (currentChunk) textChunks.push(currentChunk.trim())
+        }
+        
+        console.log(`   Splitting text into ${textChunks.length} chunks for TTS...`)
+        
+        const audioChunks: Buffer[] = []
+        for (let i = 0; i < textChunks.length; i++) {
+          const chunk = textChunks[i]
+          if (!chunk.trim()) continue
+          
+          try {
+            const encodedText = encodeURIComponent(chunk)
+            const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${ttsLang}&client=tw-ob&q=${encodedText}`
+            
+            console.log(`   Fetching chunk ${i + 1}/${textChunks.length} (${chunk.length} chars)...`)
+            const response = await fetch(ttsUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://translate.google.com/'
+              },
+              signal: AbortSignal.timeout(30000)
+            })
+            
+            if (response.ok) {
+              const audioBuffer = await response.arrayBuffer()
+              const buffer = Buffer.from(audioBuffer)
+              if (buffer.length > 100) {
+                audioChunks.push(buffer)
+                console.log(`   ✅ Chunk ${i + 1} received: ${buffer.length} bytes`)
+              } else {
+                console.log(`   ⚠️ Chunk ${i + 1} too small: ${buffer.length} bytes`)
+              }
+            } else {
+              console.log(`   ⚠️ Chunk ${i + 1} failed: ${response.status}`)
+            }
+            
+            // Small delay between requests to avoid rate limiting
+            if (i < textChunks.length - 1) {
+              await new Promise(resolve => setTimeout(resolve, 500))
+            }
+          } catch (chunkError) {
+            const err = chunkError as Error
+            console.log(`   ❌ Chunk ${i + 1} error: ${err.message}`)
+          }
+        }
+        
+        if (audioChunks.length > 0) {
+          // Combine all audio chunks
+          const combinedBuffer = Buffer.concat(audioChunks)
+          if (combinedBuffer.length > 1000) {
+            fs.writeFileSync(mp3Path, combinedBuffer)
+            console.log(`✅ HTTP-based TTS succeeded! Combined audio size: ${combinedBuffer.length} bytes (${audioChunks.length} chunks)`)
+            audioGenerated = true
+          } else {
+            console.log(`⚠️ Combined audio too small: ${combinedBuffer.length} bytes`)
+          }
+        } else {
+          console.log('❌ No audio chunks received')
+        }
+      } catch (httpTtsError) {
+        const err = httpTtsError as Error
+        console.log(`❌ HTTP-based TTS failed: ${err.message}`)
+        if (err.stack) {
+          console.log(`   Stack: ${err.stack.split('\n').slice(0, 3).join('\n')}`)
+        }
+      }
+    }
+    
+    // Method 3: Try edge-tts-node npm package (works on all platforms)
     if (!audioGenerated) {
       try {
         console.log('📢 Trying edge-tts-node npm package (PRIMARY METHOD)...')
@@ -486,7 +595,7 @@ async function generateNaturalAudio(
       }
     }
     
-    // Method 3: For English - use macOS say (very natural Samantha voice) - only on macOS
+    // Method 4: For English - use macOS say (very natural Samantha voice) - only on macOS
     if (!audioGenerated && language === 'english' && process.platform === 'darwin') {
       try {
         console.log('📢 Trying macOS say...')
@@ -517,7 +626,7 @@ async function generateNaturalAudio(
       }
     }
     
-    // Method 4: Final fallback - use macOS say with any available voice for Hindi (only on macOS)
+    // Method 5: Final fallback - use macOS say with any available voice for Hindi (only on macOS)
     if (!audioGenerated && language === 'hindi' && process.platform === 'darwin') {
       try {
         console.log('📢 Fallback: Using macOS say for Hindi (limited)...')
@@ -602,8 +711,8 @@ async function generateNaturalAudio(
     
     // If we got here, all methods failed
     const errorMsg = language === 'hindi' 
-      ? 'All audio generation methods failed for Hindi. Tried: Python edge-tts, edge-tts-node npm package, macOS say fallback.'
-      : 'All audio generation methods failed. Tried: Python edge-tts, edge-tts-node npm package, macOS say.'
+      ? 'All audio generation methods failed for Hindi. Tried: Python edge-tts, HTTP-based TTS (Google), edge-tts-node npm package, macOS say fallback.'
+      : 'All audio generation methods failed. Tried: Python edge-tts, HTTP-based TTS (Google), edge-tts-node npm package, macOS say.'
     throw new Error(errorMsg)
   } catch (error) {
     const err = error as Error
@@ -1014,8 +1123,8 @@ export async function generateShortsVideo(
         success: false,
         error: 'AUDIO_GENERATION_FAILED',
         errorMessage: language === 'hindi' 
-          ? 'Failed to generate audio. Tried: Python edge-tts, edge-tts-node npm package, macOS say fallback.'
-          : 'Failed to generate audio. Tried: Python edge-tts, edge-tts-node npm package, macOS say.'
+          ? 'Failed to generate audio. Tried: Python edge-tts, HTTP-based TTS (Google), edge-tts-node npm package, macOS say fallback.'
+          : 'Failed to generate audio. Tried: Python edge-tts, HTTP-based TTS (Google), edge-tts-node npm package, macOS say.'
       }
     }
 
