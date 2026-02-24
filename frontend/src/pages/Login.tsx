@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { Sparkles, Mail, Lock, User } from 'lucide-react'
+import { Sparkles, Mail, Lock } from 'lucide-react'
 import { login } from '../services/api'
 import toast from 'react-hot-toast'
 

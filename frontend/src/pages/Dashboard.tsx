@@ -48,7 +48,7 @@ export default function Dashboard() {
   useEffect(() => {
     return () => {
       if (pollingTimeoutRef.current) {
-        clearTimeout(pollingTimeoutRef.current)
+        window.clearTimeout(pollingTimeoutRef.current)
         pollingTimeoutRef.current = null
       }
       isPollingRef.current = false
@@ -104,7 +104,7 @@ export default function Dashboard() {
     // Stop any existing polling
     isPollingRef.current = false
     if (pollingTimeoutRef.current) {
-      clearTimeout(pollingTimeoutRef.current)
+      window.clearTimeout(pollingTimeoutRef.current)
       pollingTimeoutRef.current = null
     }
 
@@ -157,7 +157,7 @@ export default function Dashboard() {
             // Stop polling
             isPollingRef.current = false
             if (pollingTimeoutRef.current) {
-              clearTimeout(pollingTimeoutRef.current)
+              window.clearTimeout(pollingTimeoutRef.current)
               pollingTimeoutRef.current = null
             }
             
@@ -188,7 +188,7 @@ export default function Dashboard() {
             // Stop polling
             isPollingRef.current = false
             if (pollingTimeoutRef.current) {
-              clearTimeout(pollingTimeoutRef.current)
+              window.clearTimeout(pollingTimeoutRef.current)
               pollingTimeoutRef.current = null
             }
             
@@ -210,7 +210,7 @@ export default function Dashboard() {
           } else {
             // Continue polling only if flag is still true
             if (isPollingRef.current) {
-              pollingTimeoutRef.current = setTimeout(pollStatus, 1500)
+              pollingTimeoutRef.current = window.setTimeout(pollStatus, 1500) as unknown as number
             }
           }
         } catch (err: any) {
@@ -221,14 +221,14 @@ export default function Dashboard() {
             console.log('Job not found, might be cold start. Retrying...')
             // Continue polling with longer delay
             if (isPollingRef.current) {
-              pollingTimeoutRef.current = setTimeout(pollStatus, 3000)
+              pollingTimeoutRef.current = window.setTimeout(pollStatus, 3000) as unknown as number
             }
             return
           }
           
           // Continue polling only if flag is still true
           if (isPollingRef.current) {
-            pollingTimeoutRef.current = setTimeout(pollStatus, 2000)
+            pollingTimeoutRef.current = window.setTimeout(pollStatus, 2000) as unknown as number
           }
         }
       }
