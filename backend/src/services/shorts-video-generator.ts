@@ -106,8 +106,8 @@ async function downloadPicsumImage(jobId: string): Promise<string | null> {
  * With retry logic for reliability
  */
 async function generateVerticalImage(prompt: string, jobId: string, retryCount = 0): Promise<string | null> {
-  const MAX_RETRIES = 3
-  const RETRY_DELAY = 2000 // 2 seconds
+  const MAX_RETRIES = 5 // Increased retries for better reliability
+  const RETRY_DELAY = 3000 // 3 seconds base delay
   
   try {
     ensureTempDir()
@@ -125,18 +125,22 @@ async function generateVerticalImage(prompt: string, jobId: string, retryCount =
     const controller = new AbortController()
     const timeoutId = setTimeout(() => {
       controller.abort()
-      console.error('⏱️ Image generation timeout after 60 seconds')
-    }, 60000) // 60s timeout (reduced from 90s)
+      console.error('⏱️ Image generation timeout after 90 seconds')
+    }, 90000) // 90s timeout (increased for reliability)
     
     let response: Response
     try {
       response = await fetch(imageUrl, { 
         signal: controller.signal,
         headers: { 
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'image/jpeg,image/png,image/webp,*/*',
-          'Referer': 'https://pollinations.ai/'
-        }
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Referer': 'https://pollinations.ai/',
+          'Cache-Control': 'no-cache'
+        },
+        // Add redirect handling
+        redirect: 'follow'
       })
       clearTimeout(timeoutId)
     } catch (fetchError) {
@@ -163,6 +167,18 @@ async function generateVerticalImage(prompt: string, jobId: string, retryCount =
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error')
       console.error(`❌ HTTP ${response.status}: ${errorText.slice(0, 200)}`)
+      
+      // HTTP 530 is Cloudflare error - usually temporary, retry with longer delay
+      if (response.status === 530) {
+        console.log(`⚠️ Cloudflare error (530) detected - this is usually temporary`)
+        if (retryCount < MAX_RETRIES) {
+          const extendedDelay = RETRY_DELAY * (retryCount + 2) // Longer delay for 530 errors
+          console.log(`🔄 Retrying in ${extendedDelay}ms...`)
+          await new Promise(resolve => setTimeout(resolve, extendedDelay))
+          return generateVerticalImage(prompt, jobId, retryCount + 1)
+        }
+      }
+      
       if (retryCount < MAX_RETRIES && response.status >= 500) {
         // Retry on server errors
         console.log(`🔄 Retrying due to server error (${response.status})...`)
