@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import multer from 'multer'
+import multer, { FileFilterCallback } from 'multer'
 import * as path from 'path'
 import * as os from 'os'
 import * as fs from 'fs'
@@ -46,11 +46,11 @@ if (!fs.existsSync(TEMP_DIR)) {
 }
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req: Request, _file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
     cb(null, TEMP_DIR)
   },
-  filename: (req, file, cb) => {
-    const jobId = req.params.jobId || 'temp'
+  filename: (req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
+    const jobId = (req.params as { jobId?: string }).jobId || 'temp'
     const ext = path.extname(file.originalname) || '.jpg'
     cb(null, `manual_image_${jobId}${ext}`)
   }
@@ -61,7 +61,7 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB max
   },
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
     // Accept only image files
     if (file.mimetype.startsWith('image/')) {
       cb(null, true)
@@ -87,7 +87,7 @@ workflowUploadRouter.post(
         return res.status(401).json({ error: 'Unauthorized' })
       }
 
-      const { jobId } = req.params
+      const { jobId } = req.params as { jobId: string }
 
       if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' })
@@ -97,7 +97,7 @@ workflowUploadRouter.post(
       const job = await Job.findOne({ jobId, userId: req.userId })
       if (!job) {
         // Cleanup uploaded file
-        if (fs.existsSync(req.file.path)) {
+        if (req.file.path && fs.existsSync(req.file.path)) {
           fs.unlinkSync(req.file.path)
         }
         return res.status(404).json({ error: 'Job not found or access denied' })
@@ -205,7 +205,7 @@ workflowUploadRouter.post(
       console.error('Manual image upload error:', err)
       
       // Cleanup uploaded file on error
-      if (req.file && fs.existsSync(req.file.path)) {
+      if (req.file && req.file.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path)
       }
       
@@ -226,7 +226,7 @@ workflowUploadRouter.post('/continue/:jobId', authenticateToken, async (req: Aut
       return res.status(401).json({ error: 'Unauthorized' })
     }
 
-    const { jobId } = req.params
+    const { jobId } = req.params as { jobId: string }
 
     // Get job
     const job = await Job.findOne({ jobId, userId: req.userId })

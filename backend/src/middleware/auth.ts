@@ -1,10 +1,12 @@
 import { Request, Response, NextFunction } from 'express'
 import jwt from 'jsonwebtoken'
+import { File } from 'multer'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 
 export interface AuthRequest extends Request {
   userId?: string
+  file?: File
 }
 
 export function authenticateToken(req: AuthRequest, res: Response, next: NextFunction) {
