@@ -672,38 +672,62 @@ async function createVideoWithSyncedSubtitles(
     console.log('🎬 Creating video with synced subtitles...')
     console.log(`📹 Video duration: ${videoDuration.toFixed(1)}s`)
     console.log(`📝 ASS file: ${assPath}`)
+    console.log(`📁 Image: ${imagePath}`)
+    console.log(`🎵 Audio: ${audioPath}`)
     
     let resolved = false
     if (!ffmpegPath) {
       throw new Error('FFmpeg not found. Make sure ffmpeg-static is installed.')
     }
     
+    // Calculate timeout based on video duration (duration * 3 + 30s buffer)
+    const timeoutDuration = Math.min((videoDuration * 3 + 30) * 1000, 120000) // Max 120s
+    console.log(`⏱️ FFmpeg timeout set to: ${timeoutDuration / 1000}s`)
+    
     const proc = spawn(ffmpegPath, args, {
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false // Don't detach process
     }) as any
     let stderr = ''
     let stdout = ''
 
-    // Set timeout (90 seconds max) - increased for reliability
+    // Set timeout based on video duration
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true
-        console.error('❌ FFmpeg timeout after 90 seconds - killing process')
+        console.error(`❌ FFmpeg timeout after ${timeoutDuration / 1000}s - killing process`)
         try {
-          proc.kill('SIGKILL')
+          // Kill process group to ensure cleanup
+          if (proc && proc.pid) {
+            try {
+              process.kill(-proc.pid, 'SIGKILL') // Kill process group
+            } catch (e) {
+              // Try individual kill
+              proc.kill('SIGKILL')
+            }
+          } else {
+            proc.kill('SIGKILL')
+          }
+          
           // Force cleanup after kill
           setTimeout(() => {
             try {
-              if (proc && !proc.killed) {
-                proc.kill('SIGTERM')
+              if (proc && !proc.killed && proc.pid) {
+                try {
+                  process.kill(-proc.pid, 'SIGTERM')
+                } catch (e) {
+                  proc.kill('SIGTERM')
+                }
               }
             } catch (e) {
               // Ignore cleanup errors
             }
-          }, 1000)
+          }, 2000)
         } catch (killError) {
           console.error('Error killing FFmpeg process:', killError)
         }
+        
+        // Cleanup files
         if (fs.existsSync(assPath)) {
           try {
             fs.unlinkSync(assPath)
@@ -711,22 +735,46 @@ async function createVideoWithSyncedSubtitles(
             // Ignore cleanup errors
           }
         }
+        
         resolve(false)
       }
-    }, 90000)
-
-    proc.stdout?.on('data', (data: Buffer) => {
-      stdout += data.toString()
-    })
+    }, timeoutDuration)
 
     proc.stderr.on('data', (data: Buffer) => {
       const text = data.toString()
       stderr += text
-      // Log progress
+      // Limit stderr size to prevent memory issues
+      if (stderr.length > 10000) {
+        stderr = stderr.slice(-10000) // Keep last 10KB
+      }
+      // Log progress (less frequently to reduce memory)
       const timeMatch = text.match(/time=(\d+:\d+:\d+\.\d+)/)
-      if (timeMatch) {
+      if (timeMatch && Math.random() < 0.3) { // Log only 30% of progress updates
         console.log(`   FFmpeg progress: ${timeMatch[1]}`)
       }
+    })
+    
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString()
+      // Limit stdout size
+      if (stdout.length > 5000) {
+        stdout = stdout.slice(-5000)
+      }
+    })
+    
+    proc.on('error', (err: Error) => {
+      if (resolved) return
+      resolved = true
+      clearTimeout(timeout)
+      console.error('❌ FFmpeg spawn error:', err.message)
+      if (fs.existsSync(assPath)) {
+        try {
+          fs.unlinkSync(assPath)
+        } catch (e) {
+          // Ignore
+        }
+      }
+      resolve(false)
     })
 
     proc.on('close', (code: number) => {
@@ -734,47 +782,73 @@ async function createVideoWithSyncedSubtitles(
       resolved = true
       clearTimeout(timeout)
       
-      // Clean up ASS file
+      // Clean up ASS file immediately
       if (fs.existsSync(assPath)) {
-        fs.unlinkSync(assPath)
+        try {
+          fs.unlinkSync(assPath)
+        } catch (e) {
+          // Ignore cleanup errors
+        }
       }
       
       if (code === 0 && fs.existsSync(outputPath)) {
-        const stats = fs.statSync(outputPath)
-        console.log(`✅ Video created with synced subtitles! Size: ${Math.round(stats.size/1024)}KB`)
-        resolve(true)
-      } else {
+        try {
+          const stats = fs.statSync(outputPath)
+          if (stats.size > 10000) { // At least 10KB
+            console.log(`✅ Video created with synced subtitles! Size: ${Math.round(stats.size/1024)}KB`)
+            resolve(true)
+            return
+          } else {
+            console.error(`⚠️ Video file too small: ${stats.size} bytes`)
+            if (fs.existsSync(outputPath)) {
+              try {
+                fs.unlinkSync(outputPath)
+              } catch (e) {
+                // Ignore
+              }
+            }
+          }
+        } catch (statError) {
+          console.error('Error checking video file:', statError)
+        }
+      }
+      
+      // Only proceed with fallback if main FFmpeg failed
+      if (code !== 0 || !fs.existsSync(outputPath)) {
         console.error(`❌ FFmpeg failed (code ${code})`)
-        console.error('Error:', stderr.slice(-1000))
+        if (stderr) {
+          console.error('Error:', stderr.slice(-500)) // Reduced log size
+        }
         
         // Fallback without subtitles
-        console.log('🔄 Creating video without subtitles...')
+        console.log('🔄 Creating video without subtitles (fallback)...')
         const fallbackArgs = [
-          '-y',
-          '-loop', '1',
-          '-i', imagePath,
-          '-i', audioPath,
-          '-c:v', 'libx264',
-          '-tune', 'stillimage',
-          '-c:a', 'aac',
-          '-b:a', '192k',
-          '-ar', '44100',
-          '-filter_complex', '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[v];[1:a]volume=1.8[a]',
-          '-map', '[v]',
-          '-map', '[a]',
-          '-pix_fmt', 'yuv420p',
-          '-t', videoDuration.toFixed(2), // Exact duration
-          outputPath
+        '-y',
+        '-loop', '1',
+        '-i', imagePath,
+        '-i', audioPath,
+        '-c:v', 'libx264',
+        '-tune', 'stillimage',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ar', '44100',
+        '-filter_complex', '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2[v];[1:a]volume=1.8[a]',
+        '-map', '[v]',
+        '-map', '[a]',
+        '-pix_fmt', 'yuv420p',
+        '-t', videoDuration.toFixed(2), // Exact duration
+        outputPath
         ]
         
         let fallbackResolved = false
+        const fallbackTimeoutDuration = Math.min((videoDuration * 2 + 20) * 1000, 60000) // Max 60s
         const fallbackTimeout = setTimeout(() => {
           if (!fallbackResolved) {
             fallbackResolved = true
-            console.error('❌ Fallback FFmpeg timeout')
+            console.error(`❌ Fallback FFmpeg timeout after ${fallbackTimeoutDuration / 1000}s`)
             resolve(false)
           }
-        }, 60000)
+        }, fallbackTimeoutDuration)
         
         if (!ffmpegPath) {
           if (!fallbackResolved) {
@@ -786,60 +860,62 @@ async function createVideoWithSyncedSubtitles(
         }
         
         const fallback = spawn(ffmpegPath, fallbackArgs, {
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false
         }) as any
         
         let fallbackStderr = ''
         fallback.stderr?.on('data', (data: Buffer) => {
           fallbackStderr += data.toString()
-        })
-        
-        // Set timeout for fallback
-        const fallbackKillTimeout = setTimeout(() => {
-          if (!fallbackResolved) {
-            fallbackResolved = true
-            clearTimeout(fallbackTimeout)
-            console.error('❌ Fallback FFmpeg timeout - killing process')
-            try {
-              fallback.kill('SIGKILL')
-            } catch (e) {
-              // Ignore
-            }
-            resolve(false)
+          // Limit stderr size to prevent memory issues
+          if (fallbackStderr.length > 5000) {
+            fallbackStderr = fallbackStderr.slice(-5000)
           }
-        }, 90000)
+        })
         
         fallback.on('close', (fallbackCode: number) => {
           if (fallbackResolved) return
-          clearTimeout(fallbackKillTimeout)
-          fallbackResolved = true
           clearTimeout(fallbackTimeout)
+          fallbackResolved = true
+          
           if (fallbackCode === 0 && fs.existsSync(outputPath)) {
-            console.log('✅ Video created (no subtitles)')
-            resolve(true)
-          } else {
-            resolve(false)
+            try {
+              const stats = fs.statSync(outputPath)
+              if (stats.size > 10000) {
+                console.log(`✅ Fallback video created! Size: ${Math.round(stats.size/1024)}KB`)
+                resolve(true)
+                return
+              } else {
+                console.error(`⚠️ Fallback video too small: ${stats.size} bytes`)
+                if (fs.existsSync(outputPath)) {
+                  try {
+                    fs.unlinkSync(outputPath)
+                  } catch (e) {
+                    // Ignore
+                  }
+                }
+              }
+            } catch (statError) {
+              console.error('Error checking fallback video:', statError)
+            }
           }
+          
+          console.error(`❌ Fallback FFmpeg failed (code ${fallbackCode})`)
+          if (fallbackStderr) {
+            console.error('Fallback error:', fallbackStderr.slice(-500))
+          }
+          resolve(false)
         })
-        fallback.on('error', () => {
+        
+        fallback.on('error', (err: Error) => {
           if (!fallbackResolved) {
             fallbackResolved = true
             clearTimeout(fallbackTimeout)
+            console.error('❌ Fallback FFmpeg spawn error:', err.message)
             resolve(false)
           }
         })
       }
-    })
-
-    proc.on('error', (err: Error) => {
-      if (resolved) return
-      resolved = true
-      clearTimeout(timeout)
-      console.error('❌ FFmpeg spawn error:', err.message)
-      if (fs.existsSync(assPath)) {
-        fs.unlinkSync(assPath)
-      }
-      resolve(false)
     })
   })
 }
