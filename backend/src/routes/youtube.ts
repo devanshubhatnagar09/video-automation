@@ -4,6 +4,7 @@ import { Credentials } from 'google-auth-library'
 import { authenticateToken, AuthRequest } from '../middleware/auth.js'
 import connectDB from '../db/mongodb.js'
 import { UserSettings } from '../models/UserSettings.js'
+import { User } from '../models/User.js'
 import { decrypt, encrypt } from '../utils/encryption.js'
 
 export const youtubeRouter = Router()
@@ -114,11 +115,28 @@ youtubeRouter.get('/auth-url', authenticateToken, async (req: AuthRequest, res: 
     ]
 
     const oauth2Client = await getOAuth2Client(req.userId)
-    const url = oauth2Client.generateAuthUrl({
+    
+    // Generate auth URL
+    let url = oauth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: scopes,
       prompt: 'consent'
     })
+    
+    // Manually add state parameter if not present
+    // Some versions of googleapis don't include state properly
+    const stateParam = encodeURIComponent(String(req.userId))
+    if (!url.includes('state=')) {
+      url += (url.includes('?') ? '&' : '?') + `state=${stateParam}`
+    } else {
+      // Replace existing state if present
+      url = url.replace(/state=[^&]*/, `state=${stateParam}`)
+    }
+    
+    // Log for debugging
+    console.log('Generated auth URL with state:', req.userId)
+    console.log('Auth URL contains state:', url.includes('state='))
+    console.log('State value in URL:', url.match(/state=([^&]*)/)?.[1])
 
     res.json({ url })
   } catch (error: unknown) {
@@ -133,16 +151,29 @@ youtubeRouter.get('/callback', async (req: Request, res: Response) => {
   try {
     const { code, state } = req.query
 
+    // Log all query parameters for debugging
+    console.log('YouTube callback received:', { code: code ? 'present' : 'missing', state: state ? 'present' : 'missing', allParams: Object.keys(req.query) })
+
     if (!code || typeof code !== 'string') {
       return res.status(400).send('Missing authorization code')
     }
 
-    // State contains userId (should be encrypted in production)
+    // State contains userId
     if (!state || typeof state !== 'string') {
-      return res.status(400).send('Missing state parameter')
+      console.error('Missing state parameter. Query params:', req.query)
+      return res.status(400).send('Missing state parameter. Please try connecting again from Settings.')
     }
 
-    const userId = state // In production, decrypt this
+    const userId = state
+
+    // Verify user exists (optional but good practice)
+    await connectDB()
+    const user = await User.findById(userId)
+    if (!user) {
+      return res.status(400).send('Invalid user')
+    }
+    
+    console.log('Processing callback for user:', userId)
 
     const oauth2Client = await getOAuth2Client(userId)
     const { tokens } = await oauth2Client.getToken(code)
@@ -220,7 +251,7 @@ youtubeRouter.get('/callback', async (req: Request, res: Response) => {
               }, '*');
             }
           </script>
-          <p>Authentication failed. You can close this window.</p>
+          <p>Authentication failed: ${err.message || 'Unknown error'}. You can close this window.</p>
         </body>
       </html>
     `)
