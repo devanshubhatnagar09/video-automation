@@ -1,8 +1,15 @@
 import { Router, Request, Response } from 'express'
 import connectDB from '../db/mongodb.js'
-import { Job } from '../models/Job.js'
+import { Job, IJob } from '../models/Job.js'
 import { User } from '../models/User.js'
-import bcrypt from 'bcryptjs'
+import mongoose from 'mongoose'
+
+// Type for lean job document (without Document methods)
+type LeanJob = Omit<IJob, keyof mongoose.Document> & {
+  _id: mongoose.Types.ObjectId
+  createdAt: Date
+  updatedAt: Date
+}
 
 export const logsRouter = Router()
 
@@ -38,7 +45,7 @@ logsRouter.get('/logs', async (req: Request, res: Response) => {
     const recentJobs = await Job.find({ userId: user._id })
       .sort({ createdAt: -1 })
       .limit(100)
-      .lean()
+      .lean() as LeanJob[]
 
     // Extract all logs from jobs
     const allLogs: Array<{
@@ -116,7 +123,7 @@ logsRouter.get('/logs/job/:jobId', async (req: Request, res: Response) => {
     }
 
     // Get job logs (only if it belongs to this user)
-    const job = await Job.findOne({ jobId, userId: user._id }).lean()
+    const job = await Job.findOne({ jobId, userId: user._id }).lean() as LeanJob | null
 
     if (!job) {
       return res.status(404).json({ error: 'Job not found or access denied' })
