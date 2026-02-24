@@ -87,9 +87,14 @@ workflowRouter.post('/start', async (req: Request, res: Response) => {
   res.json({ jobId })
 })
 
-// Get workflow status
-workflowRouter.get('/status/:jobId', (req: Request, res: Response) => {
-  const { jobId } = req.params
+// Get workflow status (supports both /status/:jobId and /status?jobId=xxx)
+workflowRouter.get('/status/:jobId?', (req: Request, res: Response) => {
+  const jobId = req.params.jobId || req.query.jobId as string
+  
+  if (!jobId) {
+    return res.status(400).json({ error: 'Job ID is required' })
+  }
+  
   const job = jobs.get(jobId)
 
   if (!job) {
@@ -99,9 +104,26 @@ workflowRouter.get('/status/:jobId', (req: Request, res: Response) => {
   res.json({ success: true, ...job })
 })
 
-// Get logs for a job
-workflowRouter.get('/logs/:jobId', (req: Request, res: Response) => {
-  const { jobId } = req.params
+// Get logs for a job (supports both /logs/:jobId and /logs?jobId=xxx)
+workflowRouter.get('/logs/:jobId?', (req: Request, res: Response) => {
+  const jobId = req.params.jobId || req.query.jobId as string
+  
+  // If no jobId, return all logs
+  if (!jobId) {
+    const allLogs: Array<LogEntry & { jobId: string }> = []
+    
+    jobs.forEach((job, id) => {
+      job.logs.forEach(log => {
+        allLogs.push({ ...log, jobId: id })
+      })
+    })
+
+    // Sort by timestamp, most recent first
+    allLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+    return res.json({ logs: allLogs.slice(0, 100) })
+  }
+  
   const job = jobs.get(jobId)
 
   if (!job) {
@@ -111,21 +133,7 @@ workflowRouter.get('/logs/:jobId', (req: Request, res: Response) => {
   res.json({ logs: job.logs })
 })
 
-// Get all recent logs
-workflowRouter.get('/logs', (_req: Request, res: Response) => {
-  const allLogs: Array<LogEntry & { jobId: string }> = []
-  
-  jobs.forEach((job, jobId) => {
-    job.logs.forEach(log => {
-      allLogs.push({ ...log, jobId })
-    })
-  })
-
-  // Sort by timestamp, most recent first
-  allLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-
-  res.json({ logs: allLogs.slice(0, 100) }) // Last 100 logs
-})
+// This is now handled in /logs route above (when no jobId provided)
 
 // Background workflow runner - YouTube Shorts style
 async function runWorkflow(jobId: string, apiKey: string) {

@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: video-automation-backend
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: MONGODB_URI
+        sync: false  # Set manually in Render dashboard
+      - key: GEMINI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: YOUTUBE_CLIENT_ID
+        sync: false  # Set manually in Render dashboard
+      - key: YOUTUBE_CLIENT_SECRET
+        sync: false  # Set manually in Render dashboard
+      - key: YOUTUBE_REDIRECT_URI
+        sync: false  # Set after deployment
+      - key: BASE_URL
+        sync: false  # Set after deployment
+      - key: FRONTEND_URL
+        sync: false  # Set after frontend deployment

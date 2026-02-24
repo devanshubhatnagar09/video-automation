@@ -1,8 +1,21 @@
 import axios from 'axios'
 
-// Use relative URL - works for both local dev (via Vite proxy) and Vercel
+// API URL configuration
+// Development: local backend (http://localhost:3001)
+// Production: Render backend (from VITE_API_URL or default)
+const getApiUrl = () => {
+  // Check if we're in development
+  if (import.meta.env.DEV) {
+    return 'http://localhost:3001/api'
+  }
+  
+  // Production: Use environment variable or default Render URL
+  const apiUrl = import.meta.env.VITE_API_URL || 'https://your-backend.onrender.com'
+  return `${apiUrl}/api`
+}
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: getApiUrl(),
   headers: {
     'Content-Type': 'application/json',
   },
