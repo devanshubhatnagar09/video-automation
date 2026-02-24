@@ -242,19 +242,46 @@ async function generateVerticalImage(prompt: string, jobId: string, retryCount =
 }
 
 /**
- * Get audio duration using ffprobe
+ * Get audio duration using ffmpeg (works for both audio and video)
+ * ffmpeg-static includes ffmpeg but not ffprobe, so we use ffmpeg's stderr output
  */
 function getAudioDuration(audioPath: string): number {
   try {
-    if (!ffmpegPath) return 10
+    if (!ffmpegPath) {
+      console.log('⚠️ FFmpeg not available, using default duration 10s')
+      return 10
+    }
     
-    const ffprobePath = ffmpegPath.replace('ffmpeg', 'ffprobe')
-    const result = execSync(
-      `"${ffprobePath}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
-      { encoding: 'utf8', timeout: 10000 }
-    )
-    return parseFloat(result.trim()) || 10
-  } catch {
+    if (!fs.existsSync(audioPath)) {
+      console.log(`⚠️ Audio file not found: ${audioPath}`)
+      return 10
+    }
+    
+    // Use ffmpeg to get duration from stderr output
+    // FFmpeg outputs: Duration: HH:MM:SS.mm, start: ...
+    const output = execSync(
+      `"${ffmpegPath}" -i "${audioPath}" 2>&1 | grep -E "Duration:" | head -1 | sed -E 's/.*Duration: ([0-9:]+\\.[0-9]+).*/\\1/' || echo "00:00:10.00"`,
+      { encoding: 'utf8', timeout: 10000, stdio: 'pipe' }
+    ).trim()
+    
+    if (!output || output === '00:00:10.00') {
+      return 10
+    }
+    
+    // Parse HH:MM:SS.mm format
+    const parts = output.split(':')
+    if (parts.length === 3) {
+      const hours = parseFloat(parts[0]) || 0
+      const minutes = parseFloat(parts[1]) || 0
+      const seconds = parseFloat(parts[2]) || 0
+      const totalSeconds = hours * 3600 + minutes * 60 + seconds
+      return totalSeconds > 0 ? totalSeconds : 10
+    }
+    
+    return 10
+  } catch (error) {
+    const err = error as Error
+    console.log(`⚠️ Could not get audio duration: ${err.message}, using default 10s`)
     return 10 // Default 10 seconds
   }
 }
@@ -789,7 +816,25 @@ async function createVideoWithSyncedSubtitles(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     if (!ffmpegPath) {
-      console.error('❌ FFmpeg not found')
+      console.error('❌ FFmpeg not found - cannot create video')
+      resolve(false)
+      return
+    }
+    
+    if (!fs.existsSync(ffmpegPath)) {
+      console.error(`❌ FFmpeg executable not found at: ${ffmpegPath}`)
+      resolve(false)
+      return
+    }
+    
+    if (!fs.existsSync(imagePath)) {
+      console.error(`❌ Image file not found: ${imagePath}`)
+      resolve(false)
+      return
+    }
+    
+    if (!fs.existsSync(audioPath)) {
+      console.error(`❌ Audio file not found: ${audioPath}`)
       resolve(false)
       return
     }
@@ -836,22 +881,42 @@ async function createVideoWithSyncedSubtitles(
       throw new Error('FFmpeg not found. Make sure ffmpeg-static is installed.')
     }
     
-    const proc = spawn(ffmpegPath, args) as any
+    const proc = spawn(ffmpegPath, args, {
+      stdio: ['ignore', 'pipe', 'pipe']
+    }) as any
     let stderr = ''
     let stdout = ''
 
-    // Set timeout (60 seconds max)
+    // Set timeout (90 seconds max) - increased for reliability
     const timeout = setTimeout(() => {
       if (!resolved) {
         resolved = true
-        console.error('❌ FFmpeg timeout after 60 seconds')
-        proc.kill('SIGKILL')
+        console.error('❌ FFmpeg timeout after 90 seconds - killing process')
+        try {
+          proc.kill('SIGKILL')
+          // Force cleanup after kill
+          setTimeout(() => {
+            try {
+              if (proc && !proc.killed) {
+                proc.kill('SIGTERM')
+              }
+            } catch (e) {
+              // Ignore cleanup errors
+            }
+          }, 1000)
+        } catch (killError) {
+          console.error('Error killing FFmpeg process:', killError)
+        }
         if (fs.existsSync(assPath)) {
-          fs.unlinkSync(assPath)
+          try {
+            fs.unlinkSync(assPath)
+          } catch (e) {
+            // Ignore cleanup errors
+          }
         }
         resolve(false)
       }
-    }, 60000)
+    }, 90000)
 
     proc.stdout?.on('data', (data: Buffer) => {
       stdout += data.toString()
@@ -923,9 +988,33 @@ async function createVideoWithSyncedSubtitles(
           return
         }
         
-        const fallback = spawn(ffmpegPath, fallbackArgs) as any
+        const fallback = spawn(ffmpegPath, fallbackArgs, {
+          stdio: ['ignore', 'pipe', 'pipe']
+        }) as any
+        
+        let fallbackStderr = ''
+        fallback.stderr?.on('data', (data: Buffer) => {
+          fallbackStderr += data.toString()
+        })
+        
+        // Set timeout for fallback
+        const fallbackKillTimeout = setTimeout(() => {
+          if (!fallbackResolved) {
+            fallbackResolved = true
+            clearTimeout(fallbackTimeout)
+            console.error('❌ Fallback FFmpeg timeout - killing process')
+            try {
+              fallback.kill('SIGKILL')
+            } catch (e) {
+              // Ignore
+            }
+            resolve(false)
+          }
+        }, 90000)
+        
         fallback.on('close', (fallbackCode: number) => {
           if (fallbackResolved) return
+          clearTimeout(fallbackKillTimeout)
           fallbackResolved = true
           clearTimeout(fallbackTimeout)
           if (fallbackCode === 0 && fs.existsSync(outputPath)) {
