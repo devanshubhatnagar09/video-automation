@@ -339,72 +339,111 @@ async function generateNaturalAudio(
     if (!audioGenerated) {
       try {
         console.log('📢 Trying edge-tts-node npm package...')
-        const edgeTTSModule = await import('edge-tts-node').catch(() => null)
+        const edgeTTSModule = await import('edge-tts-node').catch((err) => {
+          console.log(`❌ edge-tts-node import error: ${(err as Error).message}`)
+          return null
+        })
         
         if (edgeTTSModule) {
           const edgeVoice = VOICE_MAP[voice] || (language === 'hindi' ? 'hi-IN-SwaraNeural' : 'en-US-JennyNeural')
+          console.log(`   Using voice: ${edgeVoice}`)
           
           try {
             // Use edge-tts-node MsEdgeTTS class
             const { MsEdgeTTS, OUTPUT_FORMAT } = edgeTTSModule
             const tts = new MsEdgeTTS({ enableLogger: false })
             
-            // Set metadata with voice and format
-            await tts.setMetadata(edgeVoice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3)
-            
-            // Generate audio to file (temporary webm, then convert to mp3)
-            const tempWebmPath = path.join(TEMP_DIR, `shorts_audio_temp_${jobId}.webm`)
-            await tts.toFile(tempWebmPath, cleanText)
-            
-            // Check if file was created
-            if (fs.existsSync(tempWebmPath)) {
-              const stats = fs.statSync(tempWebmPath)
-              if (stats.size > 1000) {
-                // Convert webm to mp3 using ffmpeg if available
-                if (ffmpegPath) {
-                  try {
-                    execSync(`"${ffmpegPath}" -y -i "${tempWebmPath}" -ar 44100 -ac 1 -b:a 192k "${mp3Path}"`, {
-                      timeout: 30000,
-                      stdio: 'pipe'
-                    })
-                    
-                    if (fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 1000) {
-                      console.log(`✅ edge-tts-node succeeded! Audio size: ${fs.statSync(mp3Path).size} bytes`)
-                      audioGenerated = true
-                    }
-                  } catch (convertError) {
-                    console.log(`⚠️ FFmpeg conversion failed, using webm directly: ${(convertError as Error).message}`)
-                    // Use webm directly - FFmpeg can handle webm in video creation
-                    fs.copyFileSync(tempWebmPath, mp3Path.replace('.mp3', '.webm'))
-                    const webmPath = mp3Path.replace('.mp3', '.webm')
-                    // Update mp3Path to webmPath for later processing
-                    fs.copyFileSync(webmPath, mp3Path)
-                    if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
-                    console.log('✅ edge-tts-node succeeded (webm format)!')
-                    audioGenerated = true
-                  }
-                } else {
-                  // No ffmpeg, use webm directly
-                  fs.copyFileSync(tempWebmPath, mp3Path.replace('.mp3', '.webm'))
-                  const webmPath = mp3Path.replace('.mp3', '.webm')
-                  fs.copyFileSync(webmPath, mp3Path)
-                  if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
-                  console.log('✅ edge-tts-node succeeded (webm format, no conversion)!')
+            // Try MP3 format first
+            try {
+              console.log('   Setting metadata for MP3 format...')
+              await tts.setMetadata(edgeVoice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3)
+              
+              console.log('   Generating audio to file...')
+              await tts.toFile(mp3Path, cleanText)
+              
+              // Check if MP3 file was created
+              if (fs.existsSync(mp3Path)) {
+                const stats = fs.statSync(mp3Path)
+                console.log(`   MP3 file created: ${stats.size} bytes`)
+                if (stats.size > 1000) {
+                  console.log('✅ edge-tts-node succeeded with MP3!')
                   audioGenerated = true
+                } else {
+                  console.log('⚠️ MP3 file too small, trying webm format...')
+                  if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path)
                 }
+              }
+            } catch (mp3Error) {
+              console.log(`⚠️ MP3 format failed: ${(mp3Error as Error).message}, trying webm...`)
+              
+              // Try webm format as fallback
+              try {
+                await tts.setMetadata(edgeVoice, OUTPUT_FORMAT.WEBM_24KHZ_16BIT_MONO_OPUS)
+                const webmPath = path.join(TEMP_DIR, `shorts_audio_${jobId}.webm`)
+                await tts.toFile(webmPath, cleanText)
                 
-                // Cleanup temp webm file
-                if (fs.existsSync(tempWebmPath)) fs.unlinkSync(tempWebmPath)
+                if (fs.existsSync(webmPath)) {
+                  const stats = fs.statSync(webmPath)
+                  console.log(`   WebM file created: ${stats.size} bytes`)
+                  if (stats.size > 1000) {
+                    // Convert webm to mp3 using ffmpeg if available
+                    if (ffmpegPath) {
+                      try {
+                        console.log('   Converting webm to mp3...')
+                        execSync(`"${ffmpegPath}" -y -i "${webmPath}" -ar 44100 -ac 1 -b:a 192k "${mp3Path}"`, {
+                          timeout: 30000,
+                          stdio: 'pipe'
+                        })
+                        
+                        if (fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 1000) {
+                          console.log(`✅ edge-tts-node succeeded (webm->mp3)! Audio size: ${fs.statSync(mp3Path).size} bytes`)
+                          audioGenerated = true
+                          if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
+                        } else {
+                          // Use webm directly if conversion fails
+                          fs.copyFileSync(webmPath, mp3Path)
+                          console.log('✅ edge-tts-node succeeded (using webm directly)!')
+                          audioGenerated = true
+                          if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
+                        }
+                      } catch (convertError) {
+                        console.log(`⚠️ FFmpeg conversion failed: ${(convertError as Error).message}, using webm directly`)
+                        // Use webm directly - FFmpeg can handle webm in video creation
+                        fs.copyFileSync(webmPath, mp3Path)
+                        console.log('✅ edge-tts-node succeeded (webm format)!')
+                        audioGenerated = true
+                        if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
+                      }
+                    } else {
+                      // No ffmpeg, use webm directly
+                      fs.copyFileSync(webmPath, mp3Path)
+                      console.log('✅ edge-tts-node succeeded (webm format, no conversion)!')
+                      audioGenerated = true
+                      if (fs.existsSync(webmPath)) fs.unlinkSync(webmPath)
+                    }
+                  }
+                }
+              } catch (webmError) {
+                const err = webmError as Error
+                console.log(`❌ edge-tts-node webm generation failed: ${err.message}`)
+                console.log(`   Stack: ${err.stack}`)
               }
             }
+            
+            // Close TTS connection
+            tts.close()
           } catch (edgeError) {
             const err = edgeError as Error
             console.log(`❌ edge-tts-node generation failed: ${err.message}`)
+            console.log(`   Stack: ${err.stack}`)
           }
+        } else {
+          console.log('❌ edge-tts-node module not available')
         }
       } catch (importError) {
         const err = importError as Error
         console.log('❌ edge-tts-node import failed:', err.message)
+        console.log(`   Stack: ${err.stack}`)
       }
     }
     
