@@ -82,15 +82,11 @@ export async function deleteFromGridFS(fileId: string): Promise<void> {
   const bucket = await getGridFSBucket()
   const ObjectId = mongoose.Types.ObjectId
   
-  return new Promise((resolve, reject) => {
-    bucket.delete(new ObjectId(fileId), (error: Error | null) => {
-      if (error) {
-        reject(error)
-      } else {
-        resolve()
-      }
-    })
-  })
+  try {
+    await bucket.delete(new ObjectId(fileId))
+  } catch (error) {
+    throw error
+  }
 }
 
 /**
